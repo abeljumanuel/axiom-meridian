@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+build/
+dist/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# SQLite (colocated with KB, outside repo)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# ChromaDB (colocated with KB, outside repo)
+chroma/
+
+# Knowledge base (outside repo, user-managed)
+meridian-kb/
+
+# pytest
+.pytest_cache/
+
+# Coverage
+htmlcov/
+.coverage

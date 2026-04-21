@@ -119,6 +119,16 @@ EXPECTED: dict[str, dict[str, Any]] = {
         "source_type": (str | None, None),
         "source_ref": (str | None, None),
     },
+    # Knowledge Templates
+    "get_rule_template": {
+        "project_id": (str | None, None),
+    },
+    "get_lesson_template": {
+        "project_id": (str | None, None),
+    },
+    "get_transcription_template": {
+        "project_id": (str | None, None),
+    },
 }
 
 
@@ -155,20 +165,17 @@ def test_tool_signature(tool_name: str, expected: dict[str, Any]) -> None:
     expected_names = set(expected.keys())
 
     assert param_names == expected_names, (
-        f"{tool_name}: parameter names mismatch. "
-        f"Expected {expected_names}, got {param_names}"
+        f"{tool_name}: parameter names mismatch. Expected {expected_names}, got {param_names}"
     )
 
     for p in params:
         exp_type, exp_default = expected[p.name]
         actual_type = hints.get(p.name, p.annotation)
         assert _param_type_matches(actual_type, exp_type), (
-            f"{tool_name}.{p.name}: type mismatch. "
-            f"Expected {exp_type}, got {actual_type}"
+            f"{tool_name}.{p.name}: type mismatch. Expected {exp_type}, got {actual_type}"
         )
         assert _default_matches(p.default, exp_default), (
-            f"{tool_name}.{p.name}: default mismatch. "
-            f"Expected {exp_default!r}, got {p.default!r}"
+            f"{tool_name}.{p.name}: default mismatch. Expected {exp_default!r}, got {p.default!r}"
         )
 
 

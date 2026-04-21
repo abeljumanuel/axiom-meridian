@@ -12,7 +12,13 @@ from fastmcp import FastMCP
 
 from meridian.config import get_db_path
 from meridian.db.connection import get_connection, initialize_db
-from meridian.tools import audit_flows, extraction, knowledge_consumption, knowledge_management
+from meridian.tools import (
+    audit_flows,
+    extraction,
+    knowledge_consumption,
+    knowledge_management,
+    knowledge_templates,
+)
 from meridian.utils.id_generator import next_sequential_id
 from meridian.utils.security import (
     TOOL_ACCESS_LEVELS,
@@ -115,13 +121,15 @@ def _security_pattern(
             "denied",
             current_transport,
         )
-        return _dump({
-            "error": "ACCESS_DENIED",
-            "tool": e.tool_name,
-            "required_level": e.required,
-            "current_level": e.current,
-            "message": str(e),
-        })
+        return _dump(
+            {
+                "error": "ACCESS_DENIED",
+                "tool": e.tool_name,
+                "required_level": e.required,
+                "current_level": e.current,
+                "message": str(e),
+            }
+        )
     except Exception:
         log_tool_access(
             c,
@@ -142,49 +150,37 @@ def _security_pattern(
 
 
 @mcp.tool()
-def index_rules_from_markdown(
-    filepath: str, default_scope_id: str, mode: str = "atomic"
-) -> str:
+def index_rules_from_markdown(filepath: str, default_scope_id: str, mode: str = "atomic") -> str:
     tool_name = "index_rules_from_markdown"
     params = {"filepath": filepath, "default_scope_id": default_scope_id, "mode": mode}
     project_id = _project_id_from_scope(default_scope_id)
 
     def _impl() -> dict:
-        return knowledge_management.index_rules_from_markdown(
-            filepath, default_scope_id, mode
-        )
+        return knowledge_management.index_rules_from_markdown(filepath, default_scope_id, mode)
 
     return _security_pattern(tool_name, params, project_id, _impl)
 
 
 @mcp.tool()
-def index_lessons_from_markdown(
-    filepath: str, default_scope_id: str, mode: str = "atomic"
-) -> str:
+def index_lessons_from_markdown(filepath: str, default_scope_id: str, mode: str = "atomic") -> str:
     tool_name = "index_lessons_from_markdown"
     params = {"filepath": filepath, "default_scope_id": default_scope_id, "mode": mode}
     project_id = _project_id_from_scope(default_scope_id)
 
     def _impl() -> dict:
-        return knowledge_management.index_lessons_from_markdown(
-            filepath, default_scope_id, mode
-        )
+        return knowledge_management.index_lessons_from_markdown(filepath, default_scope_id, mode)
 
     return _security_pattern(tool_name, params, project_id, _impl)
 
 
 @mcp.tool()
-def convert_to_atomic_format(
-    filepath: str, default_scope_id: str, doc_type: str
-) -> str:
+def convert_to_atomic_format(filepath: str, default_scope_id: str, doc_type: str) -> str:
     tool_name = "convert_to_atomic_format"
     params = {"filepath": filepath, "default_scope_id": default_scope_id, "doc_type": doc_type}
     project_id = _project_id_from_scope(default_scope_id)
 
     def _impl() -> dict:
-        return knowledge_management.convert_to_atomic_format(
-            filepath, default_scope_id, doc_type
-        )
+        return knowledge_management.convert_to_atomic_format(filepath, default_scope_id, doc_type)
 
     return _security_pattern(tool_name, params, project_id, _impl)
 
@@ -218,9 +214,7 @@ def approve_proposal(proposal_id: str) -> str:
 
 
 @mcp.tool()
-def edit_proposal(
-    proposal_id: str, new_text: str, metadata: str | None = None
-) -> str:
+def edit_proposal(proposal_id: str, new_text: str, metadata: str | None = None) -> str:
     tool_name = "edit_proposal"
     params = {"proposal_id": proposal_id, "new_text": new_text, "metadata": metadata}
     project_id = None
@@ -269,21 +263,15 @@ def generate_embeddings(scope_id: str | None = None) -> str:
 
 
 @mcp.tool()
-def generate_project_skills(
-    project_id: str, project_path: str | None = None
-) -> str:
+def generate_project_skills(project_id: str, project_path: str | None = None) -> str:
     tool_name = "generate_project_skills"
     params = {"project_id": project_id, "project_path": project_path}
 
     def _impl() -> dict[str, str]:
         path_str = project_path or os.environ.get("MERIDIAN_PROJECT_PATH")
         if not path_str:
-            raise RuntimeError(
-                "project_path is required when MERIDIAN_PROJECT_PATH is not set."
-            )
-        result = _generate_project_skills_impl(
-            _get_conn(), project_id, Path(path_str)
-        )
+            raise RuntimeError("project_path is required when MERIDIAN_PROJECT_PATH is not set.")
+        result = _generate_project_skills_impl(_get_conn(), project_id, Path(path_str))
         return {k: str(v) for k, v in result.items()}
 
     return _security_pattern(tool_name, params, project_id, _impl)
@@ -439,9 +427,7 @@ def analyze_pr_feedback(feedback_text: str, pr_ref: str, project_id: str) -> str
     }
 
     def _impl() -> dict:
-        return audit_flows.analyze_pr_feedback(
-            _get_conn(), feedback_text, pr_ref, project_id
-        )
+        return audit_flows.analyze_pr_feedback(_get_conn(), feedback_text, pr_ref, project_id)
 
     return _security_pattern(tool_name, params, project_id, _impl)
 
@@ -452,9 +438,7 @@ def check_feature_against_rules(feature_description: str, project_id: str) -> st
     params = {"feature_description": feature_description, "project_id": project_id}
 
     def _impl() -> dict:
-        return audit_flows.check_feature_against_rules(
-            _get_conn(), feature_description, project_id
-        )
+        return audit_flows.check_feature_against_rules(_get_conn(), feature_description, project_id)
 
     return _security_pattern(tool_name, params, project_id, _impl)
 
@@ -517,6 +501,44 @@ def create_pending_proposal(
             source_type=source_type,
             source_ref=source_ref,
         )
+
+    return _security_pattern(tool_name, params, project_id, _impl)
+
+
+# ---------------------------------------------------------------------------
+# Knowledge Templates tools (read-only)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def get_rule_template(project_id: str | None = None) -> str:
+    tool_name = "get_rule_template"
+    params = {"project_id": project_id}
+
+    def _impl() -> dict:
+        return knowledge_templates.build_rule_template_response(project_id, _get_conn())
+
+    return _security_pattern(tool_name, params, project_id, _impl)
+
+
+@mcp.tool()
+def get_lesson_template(project_id: str | None = None) -> str:
+    tool_name = "get_lesson_template"
+    params = {"project_id": project_id}
+
+    def _impl() -> dict:
+        return knowledge_templates.build_lesson_template_response(project_id, _get_conn())
+
+    return _security_pattern(tool_name, params, project_id, _impl)
+
+
+@mcp.tool()
+def get_transcription_template(project_id: str | None = None) -> str:
+    tool_name = "get_transcription_template"
+    params = {"project_id": project_id}
+
+    def _impl() -> dict:
+        return knowledge_templates.build_transcription_template_response(project_id, _get_conn())
 
     return _security_pattern(tool_name, params, project_id, _impl)
 

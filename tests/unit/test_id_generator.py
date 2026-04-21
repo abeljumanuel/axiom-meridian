@@ -50,7 +50,7 @@ def test_next_rule_code_increments():
 def test_next_lesson_code():
     conn = _temp_db()
     try:
-        result = next_lesson_code(conn, "project-psp-integrator")
+        result = next_lesson_code(conn, "project-project-example")
         assert result == "LL-PSP-001"
     finally:
         conn.close()

@@ -100,10 +100,10 @@ GLOBAL
     └── global-go-gin               framework: go-gin
 
 PROJECT
-├── psp-integrator                  framework: quarkus
+├── project-example                  framework: quarkus
 │                                   component_role: gateway
 │                                   runtime_version: java-21
-├── pac-module                      framework: nestjs
+├── other-project-example                      framework: nestjs
 │                                   component_role: last-mile
 └── ledger                          framework: flutter
                                     component_role: mobile-client
@@ -171,10 +171,10 @@ When a project migrates frameworks (e.g. Quarkus → Spring Boot):
 -- Update the scope attribute — no ALTER TABLE, no data loss
 UPDATE scope_attributes
 SET value = 'spring-boot'
-WHERE scope_id = 'psp-integrator' AND key = 'framework';
+WHERE scope_id = 'project-example' AND key = 'framework';
 ```
 
-Rules previously scoped to `framework = quarkus` will no longer match `psp-integrator` — they will not be surfaced in `query_rules()`. Rules scoped to `framework = spring-boot` will now be surfaced. Rules with no `rule_attributes` continue to apply regardless.
+Rules previously scoped to `framework = quarkus` will no longer match `project-example` — they will not be surfaced in `query_rules()`. Rules scoped to `framework = spring-boot` will now be surfaced. Rules with no `rule_attributes` continue to apply regardless.
 
 The `rule_history` table captures when rules are added, modified, or deprecated as a consequence of a migration, preserving the audit trail of why certain rules stopped applying.
 

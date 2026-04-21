@@ -17,6 +17,9 @@ TOOL_ACCESS_LEVELS: dict[str, str] = {
     "get_project_scope_resolution": "read",
     "get_rule_audit_log": "read",
     "list_pending_proposals": "read",
+    "get_rule_template": "read",
+    "get_lesson_template": "read",
+    "get_transcription_template": "read",
     # analyze
     "audit_pr": "analyze",
     "analyze_pr_feedback": "analyze",
@@ -63,8 +66,7 @@ def get_access_level() -> str:
     level = os.environ.get("MERIDIAN_ACCESS_LEVEL", "analyze").lower()
     if level not in LEVEL_HIERARCHY:
         raise ValueError(
-            f"Invalid MERIDIAN_ACCESS_LEVEL='{level}'. "
-            f"Valid values: read, analyze, write"
+            f"Invalid MERIDIAN_ACCESS_LEVEL='{level}'. Valid values: read, analyze, write"
         )
     return level
 
@@ -118,6 +120,7 @@ def extract_safe_params(kwargs: dict[str, Any]) -> str:
     for k, v in kwargs.items():
         if k in SENSITIVE_PARAMS and isinstance(v, str):
             import hashlib
+
             safe[f"{k}_sha256"] = hashlib.sha256(v.encode()).hexdigest()[:12]
     return json.dumps(safe, ensure_ascii=False, default=str)
 

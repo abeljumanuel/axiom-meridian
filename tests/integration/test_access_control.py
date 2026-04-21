@@ -54,7 +54,7 @@ def _last_access_logs(conn: Any, n: int = 1) -> list[dict[str, Any]]:
 
 def test_read_level_allows_query(tmp_server_db, monkeypatch):
     monkeypatch.setenv("MERIDIAN_ACCESS_LEVEL", "read")
-    result = server.query_rules("project-psp-integrator")
+    result = server.query_rules("project-project-example")
     parsed = json.loads(result)
     assert isinstance(parsed, list)
 
@@ -90,11 +90,11 @@ def test_access_log_records_all_invocations(tmp_server_db, monkeypatch):
     monkeypatch.setenv("MERIDIAN_ACCESS_LEVEL", "write")
     # Invoke three different tools (some may error on missing data, that's fine)
     try:
-        server.query_rules("project-psp-integrator")
+        server.query_rules("project-project-example")
     except Exception:
         pass
     try:
-        server.get_project_scope_resolution("project-psp-integrator")
+        server.get_project_scope_resolution("project-project-example")
     except Exception:
         pass
     try:
@@ -114,7 +114,7 @@ def test_access_log_records_all_invocations(tmp_server_db, monkeypatch):
 
 def test_access_log_excludes_sensitive_params(tmp_server_db, monkeypatch):
     monkeypatch.setenv("MERIDIAN_ACCESS_LEVEL", "analyze")
-    result = server.audit_pr("large diff containing secrets", "project-psp-integrator")
+    result = server.audit_pr("large diff containing secrets", "project-project-example")
     parsed = json.loads(result)
     # Should succeed even though there are no rules
     assert "audit_id" in parsed or "error" in parsed
@@ -122,13 +122,13 @@ def test_access_log_excludes_sensitive_params(tmp_server_db, monkeypatch):
     logs = _last_access_logs(tmp_server_db, 1)
     params = json.loads(logs[0]["parameters"])
     assert "pr_diff" not in params
-    assert params.get("project_id") == "project-psp-integrator"
+    assert params.get("project_id") == "project-project-example"
 
 
 def test_default_level_is_analyze(tmp_server_db, monkeypatch):
     monkeypatch.delenv("MERIDIAN_ACCESS_LEVEL", raising=False)
     # analyze level allows audit_pr (analyze) but denies approve_proposal (write)
-    result_audit = server.audit_pr("diff", "project-psp-integrator")
+    result_audit = server.audit_pr("diff", "project-project-example")
     assert "ACCESS_DENIED" not in result_audit
 
     result_approve = server.approve_proposal("prop-0001")

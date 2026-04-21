@@ -7,36 +7,13 @@ import sqlite3
 from typing import Any
 
 from meridian.tools.knowledge_consumption import query_lessons, query_rules
+from meridian.tools.knowledge_templates import (
+    LESSON_TEMPLATE as _LESSON_TEMPLATE,
+    RULE_TEMPLATE as _RULE_TEMPLATE,
+)
 from meridian.utils.id_generator import next_sequential_id
 from meridian.utils.privacy import strip_private_tags
 from meridian.utils.scope_resolver import load_scope_attributes, resolve_scope_hierarchy
-
-
-_RULE_TEMPLATE = (
-    "## RN-XXX-NNN\n"
-    "**Scope:** {scope_id}\n"
-    "**Categoría:** {category}\n"
-    "**Severidad:** {severity}\n"
-    "**Aplica a:** {applies_to}\n"
-    "**Tags:** {tags}\n"
-    "**Fuente:** {source}\n"
-    "**Regla:** {text}"
-)
-
-_LESSON_TEMPLATE = (
-    "## LL-XXX-NNN\n"
-    "**Scope:** {scope_id}\n"
-    "**Proyecto:** {project}\n"
-    "**Fecha:** {date}\n"
-    "**Severidad del impacto:** {severity}\n"
-    "**Área afectada:** {area}\n"
-    "**Tags:** {tags}\n"
-    "**Qué pasó:** {what_happened}\n"
-    "**Impacto:** {impact}\n"
-    "**Causa raíz:** {root_cause}\n"
-    "**Resolución:** {resolution}\n"
-    "**Originó regla:** {originated_rule}"
-)
 
 
 def extract_rules_from_transcript(
@@ -119,9 +96,7 @@ def create_pending_proposal(
     3. Generates a sequential ID and inserts into pending_proposals.
     4. Returns the proposal ID.
     """
-    cursor = conn.execute(
-        "SELECT 1 FROM scopes WHERE id = ?", (suggested_scope_id,)
-    )
+    cursor = conn.execute("SELECT 1 FROM scopes WHERE id = ?", (suggested_scope_id,))
     if cursor.fetchone() is None:
         raise ValueError(
             f"Scope '{suggested_scope_id}' does not exist. "

@@ -41,9 +41,9 @@ GLOBAL
 └── global-flutter      → todos los proyectos Flutter
 
 PROJECT
-├── psp-integrator      → hereda global-quarkus
+├── project-exampleee      → hereda global-quarkus
 │   attributes: framework=quarkus, component_role=gateway, runtime=java-21
-├── pac-module          → hereda global-nestjs
+├── other-project-example          → hereda global-nestjs
 │   attributes: framework=nestjs, component_role=last-mile
 └── ledger              → hereda global-flutter
     attributes: framework=flutter, component_role=mobile-client
@@ -68,16 +68,16 @@ KNOWLEDGE_BASE_PATH/          ← variable de entorno, ruta externa al repo
 │   │   ├── go.md
 │   │   └── flutter.md
 │   └── projects/
-│       ├── psp-integrator.md
-│       ├── pac-module.md
+│       ├── project-example.md
+│       ├── other-project-example.md
 │       └── ledger.md
 ├── lessons/
 │   ├── global/
 │   │   ├── java.md
 │   │   └── nestjs.md
 │   └── projects/
-│       ├── psp-integrator.md
-│       ├── pac-module.md
+│       ├── project-example.md
+│       ├── other-project-example.md
 │       └── ledger.md
 └── meridian.db               ← SQLite, colocated con los .md
 ```
@@ -110,8 +110,8 @@ de thread starvation en producción.
 
 ```markdown
 ## LL-PSP-003
-**Scope:** project-psp-integrator
-**Proyecto:** psp-integrator
+**Scope:** project-project-example
+**Proyecto:** project-example
 **Fecha:** 2026-01-14
 **Severidad del impacto:** critical
 **Área afectada:** payment-processing
@@ -139,7 +139,7 @@ Los archivos existentes (`Global_Rules.md`, `learned-prd-en.md`) usan formato na
 ```sql
 -- Scopes jerárquicos
 scopes (
-  id          TEXT PRIMARY KEY,   -- "global-java", "project-psp-integrator"
+  id          TEXT PRIMARY KEY,   -- "global-java", "project-project-example"
   type        TEXT NOT NULL,       -- "global" | "project"
   name        TEXT NOT NULL,
   parent_id   TEXT REFERENCES scopes(id)
@@ -340,16 +340,16 @@ INSERT INTO scopes VALUES ('global-go-gin',       'global', 'Global Go Gin',    
 INSERT INTO scopes VALUES ('global-flutter',      'global', 'Global Flutter',      'global');
 
 -- Scopes de proyecto
-INSERT INTO scopes VALUES ('project-psp-integrator', 'project', 'PSP Integrator',  'global-quarkus');
-INSERT INTO scopes VALUES ('project-pac-module',     'project', 'PAC Module',      'global-nestjs');
+INSERT INTO scopes VALUES ('project-project-example', 'project', 'Project Example',  'global-quarkus');
+INSERT INTO scopes VALUES ('project-other-project-example',     'project', 'other-project-example',      'global-nestjs');
 INSERT INTO scopes VALUES ('project-ledger',         'project', 'Ledger',          'global-flutter');
 
 -- Atributos de proyecto
-INSERT INTO scope_attributes VALUES ('project-psp-integrator', 'framework',      'quarkus');
-INSERT INTO scope_attributes VALUES ('project-psp-integrator', 'component_role', 'gateway');
-INSERT INTO scope_attributes VALUES ('project-psp-integrator', 'runtime_version','java-21');
-INSERT INTO scope_attributes VALUES ('project-pac-module',     'framework',      'nestjs');
-INSERT INTO scope_attributes VALUES ('project-pac-module',     'component_role', 'last-mile');
+INSERT INTO scope_attributes VALUES ('project-project-example', 'framework',      'quarkus');
+INSERT INTO scope_attributes VALUES ('project-project-example', 'component_role', 'gateway');
+INSERT INTO scope_attributes VALUES ('project-project-example', 'runtime_version','java-21');
+INSERT INTO scope_attributes VALUES ('project-other-project-example',     'framework',      'nestjs');
+INSERT INTO scope_attributes VALUES ('project-other-project-example',     'component_role', 'last-mile');
 INSERT INTO scope_attributes VALUES ('project-ledger',         'framework',      'flutter');
 INSERT INTO scope_attributes VALUES ('project-ledger',         'component_role', 'mobile-client');
 
@@ -584,8 +584,8 @@ clean_text = PRIVATE_PATTERN.sub('[REDACTED]', text)
 
 **Uso:**
 ```markdown
-Endpoint PSP staging: https://api.psp-staging.com/v2/devices
-<private>API key staging: sk-psp-xxx</private>
+Endpoint Project Example staging: https://api.project-example-staging.com/v2/devices
+<private>API key staging: sk-project-example-xxx</private>
 Timeout esperado: 3s
 ```
 

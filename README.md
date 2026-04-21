@@ -13,6 +13,7 @@ As knowledge bases like `Global_Rules.md` and `Lessons_Learned.md` grow, AI agen
 - [Installation](#installation)
 - [MCP Configuration](#mcp-configuration)
   - [Claude Code](#claude-code)
+  - [VSCode](#vscode)
   - [OpenCode](#opencode)
 - [Quick Start](#quick-start)
 - [Migrating Legacy Files](#migrating-legacy-files)
@@ -135,24 +136,31 @@ claude mcp add -s user \
   -m meridian mcp
 ```
 
-#### Option B — uv run
+> **Do not use `~/.claude/settings.json` to register MCP servers** — that file controls agent permissions and plugins, not the MCP server list.
 
-Use `uv` to run the module. Requires `uv` to be resolvable in the child process PATH:
+> **⚠️ Avoid using `uv run` for MCP configuration** — PATH resolution issues often cause "command not found" errors. Use the venv Python directly (Option A above).
 
-```bash
-claude mcp add -s user \
-  -e KNOWLEDGE_BASE_PATH="$HOME/meridian-kb" \
-  -e MERIDIAN_ACCESS_LEVEL=write \
-  -- meridian \
-  /absolute/path/to/uv \
-  run --directory /absolute/path/to/meridian \
-  python -m meridian mcp
+### VSCode
+
+Add the following to your VSCode `mcp.json` (access via Command Palette → "Preferences: Open User Settings (JSON)"):
+
+```json
+{
+  "servers": {
+    "meridian": {
+      "type": "stdio",
+      "command": "/absolute/path/to/meridian/.venv/bin/python",
+      "args": ["-m", "meridian", "mcp"],
+      "env": {
+        "KNOWLEDGE_BASE_PATH": "/home/user/meridian-kb",
+        "MERIDIAN_ACCESS_LEVEL": "write"
+      }
+    }
+  }
+}
 ```
 
-> Replace `/absolute/path/to/uv` and `/absolute/path/to/meridian` with your actual paths.
-> Verify the path to `uv` with `which uv`.
-
-> **Do not use `~/.claude/settings.json` to register MCP servers** — that file controls agent permissions and plugins, not the MCP server list.
+> **Important:** Use the absolute path to the venv Python interpreter, not `uv run`. Replace `/absolute/path/to/meridian` and `/home/user/meridian-kb` with your actual paths.
 
 ### OpenCode
 
@@ -231,6 +239,27 @@ This was fixed in v0.1.0-post. If you see it, ensure `check_same_thread=False` i
 2. Try using the venv Python path instead of `uv`.
 3. Restart Claude Code after adding the server.
 
+### "bash: -m: command not found" or "can't open file" errors
+
+This happens when using `uv run` in MCP configuration. The MCP client cannot resolve `uv` or argument parsing fails.
+
+**Solution:** Use the venv Python interpreter directly:
+
+```bash
+# Remove the problematic entry
+claude mcp remove meridian
+
+# Re-add using venv Python
+claude mcp add -s user \
+  -e KNOWLEDGE_BASE_PATH="$HOME/meridian-kb" \
+  -e MERIDIAN_ACCESS_LEVEL=write \
+  -- meridian \
+  "$PWD/.venv/bin/python" \
+  -m meridian mcp
+```
+
+For VSCode, update `mcp.json` to use the absolute path to `.venv/bin/python` instead of `uv`.
+
 ---
 
 ## Quick Start
@@ -273,7 +302,7 @@ from meridian.tools.knowledge_consumption import query_rules
 
 conn = get_connection(get_db_path())
 result = query_rules(
-    project_id='psp-integrator',
+    project_id='project-example',
     category='logging',
     detail='summary',
     format='json',
@@ -283,7 +312,7 @@ print(result)
 "
 ```
 
-This returns rules scoped to `project-psp-integrator` (inheriting from `global-quarkus` → `global-java` → `global`), filtered by `category="logging"`.
+This returns rules scoped to `project-project-example` (inheriting from `global-quarkus` → `global-java` → `global`), filtered by `category="logging"`.
 
 ### 3. Verify Access Control
 
@@ -319,12 +348,12 @@ from meridian.config import get_db_path
 from meridian.utils.skill_generator import generate_project_skills
 
 conn = get_connection(get_db_path())
-result = generate_project_skills(conn, 'psp-integrator', get_project_path())
+result = generate_project_skills(conn, 'project-example', get_project_path())
 print(result)
 "
 ```
 
-This generates `.claude/skills/meridian/psp-integrator/SKILL.md` and `references/rules.md` in the project path.
+This generates `.claude/skills/meridian/project-example/SKILL.md` and `references/rules.md` in the project path.
 
 ---
 
@@ -474,7 +503,7 @@ To query the audit log:
 ```python
 from meridian.tools.knowledge_consumption import get_rule_audit_log
 
-result = get_rule_audit_log(project_id="psp-integrator", since="2026-04-01")
+result = get_rule_audit_log(project_id="project-example", since="2026-04-01")
 ```
 
 ---
@@ -521,8 +550,8 @@ KNOWLEDGE_BASE_PATH/                 ← outside the repo
 │   │   ├── go.md
 │   │   └── flutter.md
 │   └── projects/
-│       ├── psp-integrator.md
-│       ├── pac-module.md
+│       ├── project-example.md
+│       ├── other-project-example.md
 │       └── ledger.md
 ├── lessons/
 │   ├── global/

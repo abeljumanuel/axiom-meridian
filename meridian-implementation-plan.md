@@ -266,7 +266,7 @@ def next_rule_code(conn: sqlite3.Connection, scope_id: str) -> str:
     Extrae el segmento tech del scope_id:
       "global-java" → "JAVA"
       "global-quarkus" → "QUARKUS"
-      "project-psp-integrator" → "PSP"
+      "project-project-example" → "PSP"
     Consulta MAX(code) en rules WHERE code LIKE 'RN-{TECH}-%'
     Incrementa el número. Si no hay registros, inicia en 001.
     Retorna: "RN-JAVA-011"
@@ -275,7 +275,7 @@ def next_rule_code(conn: sqlite3.Connection, scope_id: str) -> str:
 def next_lesson_code(conn: sqlite3.Connection, scope_id: str) -> str:
     """
     Similar a next_rule_code pero para lecciones.
-    "project-psp-integrator" → "PSP"
+    "project-project-example" → "PSP"
     Retorna: "LL-PSP-003"
     """
 
@@ -289,7 +289,7 @@ def next_sequential_id(conn: sqlite3.Connection, table: str, prefix: str) -> str
     """
 ```
 
-**Regla para el segmento tech/project:** Tomar la última parte del `scope_id` después del último `-`. Si el scope es `project-psp-integrator`, tomar `psp`. Si es `global-java`, tomar `java`. Si es `global-go-fiber`, tomar `fiber`. Convertir a mayúsculas.
+**Regla para el segmento tech/project:** Tomar la última parte del `scope_id` después del último `-`. Si el scope es `project-project-example`, tomar `project-example`. Si es `global-java`, tomar `java`. Si es `global-go-fiber`, tomar `fiber`. Convertir a mayúsculas.
 
 **Excepción:** Si `scope_id` es `global` (sin guión), usar `GLOBAL` como segmento.
 
@@ -308,7 +308,7 @@ Tests exactos:
 Tests exactos:
 1. `test_next_rule_code_first_rule` — DB vacía, `scope_id="global-java"` → retorna `"RN-JAVA-001"`.
 2. `test_next_rule_code_increments` — insertar una regla con code `RN-JAVA-005`. Llamar `next_rule_code` → retorna `"RN-JAVA-006"`.
-3. `test_next_lesson_code` — `scope_id="project-psp-integrator"` → retorna `"LL-PSP-001"`.
+3. `test_next_lesson_code` — `scope_id="project-project-example"` → retorna `"LL-PSP-001"`.
 4. `test_next_sequential_id` — tabla `pending_proposals`, prefix `prop` → retorna `"prop-0001"`.
 5. `test_scope_id_global` — `scope_id="global"` → segmento es `"GLOBAL"` → retorna `"RN-GLOBAL-001"`.
 
@@ -811,10 +811,10 @@ def filter_by_attributes(
 **Archivo:** `tests/unit/test_scope_resolver.py`
 
 Tests exactos (usar DB inicializada con datos seed):
-1. `test_resolve_psp_integrator` — `"project-psp-integrator"` → `["project-psp-integrator", "global-quarkus", "global-java", "global"]`
-2. `test_resolve_pac_module` — `"project-pac-module"` → `["project-pac-module", "global-nestjs", "global"]`
+1. `test_resolve_project_example` — `"project-project-example"` → `["project-project-example", "global-quarkus", "global-java", "global"]`
+2. `test_resolve_other_project_example` — `"project-other-project-example"` → `["project-other-project-example", "global-nestjs", "global"]`
 3. `test_resolve_nonexistent` — `"project-nonexistent"` → `ValueError`
-4. `test_load_attributes_psp` — `"project-psp-integrator"` → `{"framework": "quarkus", "component_role": "gateway", "runtime_version": "java-21"}`
+4. `test_load_attributes_project_example` — `"project-project-example"` → `{"framework": "quarkus", "component_role": "gateway", "runtime_version": "java-21"}`
 5. `test_load_attributes_empty` — `"global"` → `{}`
 6. `test_filter_no_attributes` — regla sin `rule_attributes` → incluida siempre
 7. `test_filter_matching_attributes` — regla con `framework=quarkus`, proyecto con `framework=quarkus` → incluida
@@ -866,7 +866,7 @@ python -m pytest tests/unit/test_scope_resolver.py -v
 4. Determinar el archivo `.md` destino según `scope_id`:
    - `global-java` → `knowledge-base/global/java.md`
    - `global-quarkus` → `knowledge-base/global/quarkus.md`
-   - `project-psp-integrator` → `knowledge-base/projects/psp-integrator.md`
+   - `project-project-example` → `knowledge-base/projects/project-example.md`
 5. Verificar que el archivo destino existe. Si no → error antes de escribir nada.
 6. Append del bloque al final del archivo con `\n\n` de separación.
 7. Calcular `file_offset` y `byte_length` del bloque recién escrito.
@@ -932,7 +932,7 @@ Agregar al archivo `tests/integration/test_index_and_query.py`:
 2. `test_query_rules_full` — query con `detail="full"` → response tiene `text` completo.
 3. `test_query_rules_filter_severity` — query con `severity="critical"` → solo retorna reglas critical.
 4. `test_query_rules_filter_category` — query con `category="logging"` → solo RN-JAVA-002.
-5. `test_query_rules_scope_resolution` — query para `project-psp-integrator` → retorna reglas de `global-java` + `global-quarkus` + `global` + `project-psp-integrator`.
+5. `test_query_rules_scope_resolution` — query para `project-project-example` → retorna reglas de `global-java` + `global-quarkus` + `global` + `project-project-example`.
 6. `test_query_rules_toon_format` — query con `format="toon"` → response empieza con `items[N]{...}:`.
 7. `test_query_rules_stale_index` — modificar el `.md` externamente para que `file_offset` sea inválido → response incluye error `STALE_INDEX` para esa regla.
 8. `test_get_rule_timeline` — indexar, luego update una regla → `get_rule_timeline` retorna los 2 eventos de historial.

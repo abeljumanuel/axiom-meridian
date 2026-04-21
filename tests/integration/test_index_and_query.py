@@ -328,22 +328,22 @@ def test_query_rules_scope_resolution(tmp_kb):
         str(global_file), default_scope_id="global", mode="atomic"
     )
 
-    psp_file = kb_path / "knowledge-base" / "projects" / "psp-integrator.md"
-    psp_file.write_text(
+    project_example_file = kb_path / "knowledge-base" / "projects" / "project-example.md"
+    project_example_file.write_text(
         "## RN-PSP-001\n"
-        "**Scope:** project-psp-integrator\n"
+        "**Scope:** project-project-example\n"
         "**Categoriía:** payment\n"
         "**Severidad:** critical\n"
         "**Aplica a:** **/*.java\n"
-        "**Tags:** psp, payment\n"
+        "**Tags:** project_example, payment\n"
         "**Fuente:** manual\n"
         "**Regla:** Validate PSP response before processing.\n"
     )
     index_rules_from_markdown(
-        str(psp_file), default_scope_id="project-psp-integrator", mode="atomic"
+        str(project_example_file), default_scope_id="project-project-example", mode="atomic"
     )
 
-    result = query_rules("project-psp-integrator", detail="summary")
+    result = query_rules("project-project-example", detail="summary")
     data = json.loads(result)
 
     codes = {r["code"] for r in data}

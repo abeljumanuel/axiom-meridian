@@ -183,16 +183,16 @@ INSERT INTO scopes VALUES ('global-go-fiber',     'global', 'Global Go Fiber',  
 INSERT INTO scopes VALUES ('global-go-gin',       'global', 'Global Go Gin',       'global-go');
 INSERT INTO scopes VALUES ('global-flutter',      'global', 'Global Flutter',      'global');
 
-INSERT INTO scopes VALUES ('project-psp-integrator', 'project', 'PSP Integrator',  'global-quarkus');
-INSERT INTO scopes VALUES ('project-pac-module',     'project', 'PAC Module',      'global-nestjs');
+INSERT INTO scopes VALUES ('project-project-example', 'project', 'Project Example',  'global-quarkus');
+INSERT INTO scopes VALUES ('project-other-project-example',     'project', 'other-project-example',      'global-nestjs');
 INSERT INTO scopes VALUES ('project-ledger',         'project', 'Ledger',          'global-flutter');
 
 -- Atributos de proyecto
-INSERT INTO scope_attributes VALUES ('project-psp-integrator', 'framework',      'quarkus');
-INSERT INTO scope_attributes VALUES ('project-psp-integrator', 'component_role', 'gateway');
-INSERT INTO scope_attributes VALUES ('project-psp-integrator', 'runtime_version','java-21');
-INSERT INTO scope_attributes VALUES ('project-pac-module',     'framework',      'nestjs');
-INSERT INTO scope_attributes VALUES ('project-pac-module',     'component_role', 'last-mile');
+INSERT INTO scope_attributes VALUES ('project-project-example', 'framework',      'quarkus');
+INSERT INTO scope_attributes VALUES ('project-project-example', 'component_role', 'gateway');
+INSERT INTO scope_attributes VALUES ('project-project-example', 'runtime_version','java-21');
+INSERT INTO scope_attributes VALUES ('project-other-project-example',     'framework',      'nestjs');
+INSERT INTO scope_attributes VALUES ('project-other-project-example',     'component_role', 'last-mile');
 INSERT INTO scope_attributes VALUES ('project-ledger',         'framework',      'flutter');
 INSERT INTO scope_attributes VALUES ('project-ledger',         'component_role', 'mobile-client');
 

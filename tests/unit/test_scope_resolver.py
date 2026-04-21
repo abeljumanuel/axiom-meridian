@@ -35,16 +35,16 @@ def _insert_rule(conn: sqlite3.Connection, rule_id: str, code: str) -> None:
     conn.commit()
 
 
-def test_resolve_psp_integrator(tmp_path: Path) -> None:
+def test_resolve_project_example(tmp_path: Path) -> None:
     conn = _make_conn(tmp_path)
-    result = resolve_scope_hierarchy(conn, "project-psp-integrator")
-    assert result == ["project-psp-integrator", "global-quarkus", "global-java", "global"]
+    result = resolve_scope_hierarchy(conn, "project-project-example")
+    assert result == ["project-project-example", "global-quarkus", "global-java", "global"]
 
 
-def test_resolve_pac_module(tmp_path: Path) -> None:
+def test_resolve_other_project_example(tmp_path: Path) -> None:
     conn = _make_conn(tmp_path)
-    result = resolve_scope_hierarchy(conn, "project-pac-module")
-    assert result == ["project-pac-module", "global-nestjs", "global"]
+    result = resolve_scope_hierarchy(conn, "project-other-project-example")
+    assert result == ["project-other-project-example", "global-nestjs", "global"]
 
 
 def test_resolve_nonexistent(tmp_path: Path) -> None:
@@ -53,9 +53,9 @@ def test_resolve_nonexistent(tmp_path: Path) -> None:
         resolve_scope_hierarchy(conn, "project-nonexistent")
 
 
-def test_load_attributes_psp(tmp_path: Path) -> None:
+def test_load_attributes_project_example(tmp_path: Path) -> None:
     conn = _make_conn(tmp_path)
-    result = load_scope_attributes(conn, "project-psp-integrator")
+    result = load_scope_attributes(conn, "project-project-example")
     assert result == {
         "framework": "quarkus",
         "component_role": "gateway",

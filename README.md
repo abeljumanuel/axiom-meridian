@@ -11,6 +11,10 @@ As knowledge bases like `Global_Rules.md` and `Lessons_Learned.md` grow, AI agen
 ## Table of Contents
 
 - [Installation](#installation)
+  - [Quick Install](#quick-install-recommended)
+  - [Prerequisites](#prerequisites)
+  - [Manual Installation](#manual-installation)
+  - [Knowledge Base Directory](#knowledge-base-directory-optional)
 - [MCP Configuration](#mcp-configuration)
   - [Claude Code](#claude-code)
   - [VSCode](#vscode)
@@ -18,6 +22,9 @@ As knowledge bases like `Global_Rules.md` and `Lessons_Learned.md` grow, AI agen
 - [Quick Start](#quick-start)
 - [Migrating Legacy Files](#migrating-legacy-files)
 - [Environment Variables](#environment-variables)
+- [Scripts](#scripts)
+  - [install.sh](#installsh)
+  - [uninstall.sh](#uninstallsh)
 - [Security](#security)
   - [Access Levels](#access-levels)
   - [HTTP/SSE Session Token](#httpsse-session-token)
@@ -29,6 +36,21 @@ As knowledge bases like `Global_Rules.md` and `Lessons_Learned.md` grow, AI agen
 ---
 
 ## Installation
+
+### Quick Install (Recommended)
+
+```bash
+# Remote installation (auto-detects OS and MCP clients)
+curl -fsSL https://raw.githubusercontent.com/axiom-juma/meridian/main/scripts/install.sh | bash
+```
+
+Or clone and install locally:
+
+```bash
+git clone https://github.com/axiom-juma/meridian.git
+cd meridian
+bash scripts/install.sh
+```
 
 ### Prerequisites
 
@@ -49,14 +71,14 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-### Install Meridian
+### Manual Installation
 
 ```bash
 # Clone the repository
 git clone https://github.com/axiom-juma/meridian.git
 cd meridian
 
-# Pin Python version to avoid OS updates breaking the venv
+# Install dependencies
 uv python pin 3.11
 uv sync
 
@@ -65,52 +87,18 @@ python -m meridian version
 # → Axiom Meridian v0.1.0
 ```
 
-### Create the Knowledge Base Directory
+### Knowledge Base Directory (Optional)
 
-Meridian stores all knowledge **outside** the repository. Create the directory structure and set the environment variable:
+Meridian can auto-create the knowledge base directory if not configured. By default:
+- **Linux:** `~/.local/share/meridian`
+- **macOS:** `~/Library/Application Support/meridian`
+- **Windows:** `%APPDATA%/meridian`
 
-**macOS:**
-
-```bash
-mkdir -p ~/meridian-kb/knowledge-base/global
-mkdir -p ~/meridian-kb/knowledge-base/projects
-mkdir -p ~/meridian-kb/lessons/global
-mkdir -p ~/meridian-kb/lessons/projects
-export KNOWLEDGE_BASE_PATH=~/meridian-kb
-
-# Verify the complete structure
-ls ~/meridian-kb/knowledge-base/
-# Should show: global/  projects/
-
-ls ~/meridian-kb/lessons/
-# Should show: global/  projects/
-```
-
-**Linux:**
+To use a custom location, set `KNOWLEDGE_BASE_PATH`:
 
 ```bash
-mkdir -p ~/meridian-kb/knowledge-base/global
-mkdir -p ~/meridian-kb/knowledge-base/projects
-mkdir -p ~/meridian-kb/lessons/global
-mkdir -p ~/meridian-kb/lessons/projects
-export KNOWLEDGE_BASE_PATH=~/meridian-kb
-
-# Verify the complete structure
-ls ~/meridian-kb/knowledge-base/
-# Should show: global/  projects/
-
-ls ~/meridian-kb/lessons/
-# Should show: global/  projects/
-```
-
-**Windows (PowerShell):**
-
-```powershell
-New-Item -ItemType Directory -Path "$env:USERPROFILE\meridian-kb\knowledge-base\global" -Force
-New-Item -ItemType Directory -Path "$env:USERPROFILE\meridian-kb\knowledge-base\projects" -Force
-New-Item -ItemType Directory -Path "$env:USERPROFILE\meridian-kb\lessons\global" -Force
-New-Item -ItemType Directory -Path "$env:USERPROFILE\meridian-kb\lessons\projects" -Force
-$env:KNOWLEDGE_BASE_PATH = "$env:USERPROFILE\meridian-kb"
+# Example custom location
+export KNOWLEDGE_BASE_PATH=~/my-knowledge
 ```
 
 ---
@@ -128,8 +116,19 @@ Register the server using the Claude Code CLI (writes to `~/.claude.json`):
 Use the Python interpreter from the virtual environment directly. This avoids PATH issues and dependency resolution overhead:
 
 ```bash
+# KNOWLEDGE_BASE_PATH is optional — Meridian auto-creates it if not set
 claude mcp add -s user \
-  -e KNOWLEDGE_BASE_PATH="$HOME/meridian-kb" \
+  -e MERIDIAN_ACCESS_LEVEL=write \
+  -- meridian \
+  "$PWD/.venv/bin/python" \
+  -m meridian mcp
+```
+
+To use a custom knowledge base location:
+
+```bash
+claude mcp add -s user \
+  -e KNOWLEDGE_BASE_PATH="$HOME/my-knowledge" \
   -e MERIDIAN_ACCESS_LEVEL=write \
   -- meridian \
   "$PWD/.venv/bin/python" \
@@ -152,7 +151,6 @@ Add the following to your VSCode `mcp.json` (access via Command Palette → "Pre
       "command": "/absolute/path/to/meridian/.venv/bin/python",
       "args": ["-m", "meridian", "mcp"],
       "env": {
-        "KNOWLEDGE_BASE_PATH": "/home/user/meridian-kb",
         "MERIDIAN_ACCESS_LEVEL": "write"
       }
     }
@@ -160,7 +158,7 @@ Add the following to your VSCode `mcp.json` (access via Command Palette → "Pre
 }
 ```
 
-> **Important:** Use the absolute path to the venv Python interpreter, not `uv run`. Replace `/absolute/path/to/meridian` and `/home/user/meridian-kb` with your actual paths.
+> **Important:** `KNOWLEDGE_BASE_PATH` is optional — Meridian auto-creates the knowledge base if not set. Use absolute path to the venv Python interpreter, not `uv run`.
 
 ### OpenCode
 
@@ -173,7 +171,6 @@ Add the following to your `opencode.json`:
       "type": "local",
       "command": ["/absolute/path/to/meridian/.venv/bin/python", "-m", "meridian", "mcp"],
       "env": {
-        "KNOWLEDGE_BASE_PATH": "{env:KNOWLEDGE_BASE_PATH}",
         "MERIDIAN_ACCESS_LEVEL": "write"
       }
     }
@@ -186,7 +183,7 @@ Add the following to your `opencode.json`:
 }
 ```
 
-> Replace `/absolute/path/to/meridian/.venv/bin/python` with the actual path to your venv Python interpreter.
+> **Note:** `KNOWLEDGE_BASE_PATH` is optional — Meridian auto-creates the knowledge base if not set. Replace `/absolute/path/to/meridian/.venv/bin/python` with the actual path.
 
 ### Kimi CLI
 
@@ -249,9 +246,8 @@ This happens when using `uv run` in MCP configuration. The MCP client cannot res
 # Remove the problematic entry
 claude mcp remove meridian
 
-# Re-add using venv Python
+# Re-add using venv Python (KNOWLEDGE_BASE_PATH is optional now)
 claude mcp add -s user \
-  -e KNOWLEDGE_BASE_PATH="$HOME/meridian-kb" \
   -e MERIDIAN_ACCESS_LEVEL=write \
   -- meridian \
   "$PWD/.venv/bin/python" \
@@ -403,17 +399,17 @@ On approval, Meridian:
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `KNOWLEDGE_BASE_PATH` | **Yes** | — | Path to the directory containing `knowledge-base/`, `lessons/`, and `meridian.db`. Must be outside the repository. |
+| `KNOWLEDGE_BASE_PATH` | No | Auto-created | Path to knowledge base. If not set, Meridian auto-creates in OS-specific default location (`~/.local/share/meridian` on Linux, `~/Library/Application Support/meridian` on macOS, `%APPDATA%/meridian` on Windows). |
 | `MERIDIAN_PROJECT_PATH` | No | — | Path to the target project for `generate_project_skills()`. Optional if you pass `project_path` explicitly. |
 | `MERIDIAN_ACCESS_LEVEL` | No | `analyze` | Operation level: `read` (queries only), `analyze` (queries + audits), `write` (full access). |
 
-### Platform-Specific Paths
+### Platform-Specific Default Paths
 
-| Platform | Example `KNOWLEDGE_BASE_PATH` |
-|----------|-------------------------------|
-| macOS | `/Users/abel/meridian-kb` |
-| Linux | `/home/abel/meridian-kb` |
-| Windows | `C:\Users\abel\meridian-kb` |
+| Platform | Default Path |
+|----------|-------------|
+| Linux | `~/.local/share/meridian` |
+| macOS | `~/Library/Application Support/meridian` |
+| Windows | `%APPDATA%/meridian` |
 
 ---
 
@@ -570,6 +566,50 @@ KNOWLEDGE_BASE_PATH/                 ← outside the repo
 4. **Scope hierarchy is resolved** before every query. More specific rules have higher precedence.
 5. **Every rule is traceable** — which meeting originated it, which PR refined it, which lesson motivated it.
 6. **RAG and SQL coexist.** `query_rules()` uses semantic search when embeddings exist, and falls back to SQL automatically when they don't. The tool signature never changes.
+
+---
+
+## Scripts
+
+The `scripts/` directory contains installer utilities:
+
+### install.sh
+
+Automated installation script that:
+- Detects Python 3.11+ and OS type
+- Auto-detects MCP clients (Claude Code, Kimi CLI, OpenCode, VSCode)
+- Creates virtual environment at `~/.meridian/venv`
+- Auto-creates knowledge base directory
+- Configures all detected MCP clients
+
+```bash
+# Default installation
+bash scripts/install.sh
+
+# Custom directories
+INSTALL_DIR=/opt/meridian KNOWLEDGE_BASE_PATH=/data/kb bash scripts/install.sh
+
+# Skip MCP configuration
+SKIP_MCP=1 bash scripts/install.sh
+
+# Remote installation
+curl -fsSL https://raw.githubusercontent.com/axiom-juma/meridian/main/scripts/install.sh | bash
+
+# Dry run (show what would happen)
+DRY_RUN=1 bash scripts/install.sh
+```
+
+### uninstall.sh
+
+Removes Meridian installation:
+
+```bash
+# Interactive uninstall
+bash scripts/uninstall.sh
+
+# Dry run (show what would be removed)
+DRY_RUN=1 bash scripts/uninstall.sh
+```
 
 ---
 

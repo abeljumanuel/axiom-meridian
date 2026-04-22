@@ -164,7 +164,7 @@ setup_venv() {
 install_meridian() {
     log_info "Installing Meridian..."
 
-    cd "$SCRIPT_DIR"
+    cd "$(dirname "$SCRIPT_DIR")"
 
     if [ -f "pyproject.toml" ]; then
         "$BIN_DIR/pip" install -e .

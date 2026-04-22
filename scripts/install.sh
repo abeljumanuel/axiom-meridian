@@ -21,21 +21,6 @@ INSTALL_DIR="${INSTALL_DIR:-$HOME/.meridian}"
 VENV_DIR="$INSTALL_DIR/venv"
 BIN_DIR="$VENV_DIR/bin"
 
-INSTALL_STEPS=(
-    "Checking prerequisites"
-    "Checking network connectivity"
-    "Detecting operating system"
-    "Detecting MCP clients"
-    "Creating installation directory"
-    "Setting up Python virtual environment"
-    "Installing Meridian"
-    "Creating knowledge base"
-    "Setting up MCP clients"
-)
-
-TOTAL_STEPS=${#INSTALL_STEPS[@]}
-CURRENT_STEP=0
-
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -59,14 +44,9 @@ log_step() {
     echo -e "${BLUE}[STEP]${NC} $1"
 }
 
-log_progress() {
-    local step_name="$1"
-    CURRENT_STEP=$((CURRENT_STEP + 1))
-    local percent=$((CURRENT_STEP * 100 / TOTAL_STEPS))
-    printf "${BLUE}[%3d%%]${NC} %s\n" "$percent" "$step_name"
-}
-
 check_prerequisites() {
+    log_step "Checking prerequisites..."
+
     if ! command -v python3 &> /dev/null; then
         log_error "Python 3.11+ is required but not found."
         exit 1
@@ -92,13 +72,11 @@ check_network() {
 
     if command -v curl &> /dev/null; then
         if ! curl -fsSL --max-time 5 https://github.com >/dev/null 2>&1; then
-            log_warn "No network connectivity detected"
-            log_info "Installation will proceed, but remote operations may fail"
+            log_warn "No network connectivity. Local installation may fail."
         fi
     elif command -v wget &> /dev/null; then
         if ! wget --max-time=5 -q -O - https://github.com >/dev/null 2>&1; then
-            log_warn "No network connectivity detected"
-            log_info "Installation will proceed, but remote operations may fail"
+            log_warn "No network connectivity. Local installation may fail."
         fi
     fi
 }
@@ -124,6 +102,8 @@ get_default_kb_path() {
 }
 
 detect_mcp_clients() {
+    log_step "Detecting MCP clients..."
+
     CLIENTS_FOUND=()
 
     # Claude Code
@@ -437,7 +417,7 @@ Examples:
   INSTALL_DIR=/opt/meridian KNOWLEDGE_BASE_PATH=/data/kb bash install.sh
 
   # Remote installation
-  curl -fsSL https://raw.githubusercontent.com/abeljumanuel/axiom-meridian/main/scripts/install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/axiom-juma/meridian/main/scripts/install.sh | bash
 
   # Dry run (show what would happen)
   DRY_RUN=1 bash install.sh
@@ -464,36 +444,14 @@ main() {
     log_info "Options:"
     echo "  Install directory:  $INSTALL_DIR"
     echo "  Knowledge base:    ${KNOWLEDGE_BASE_PATH:-auto}"
-    echo "  Skip MCP setup:    ${SKIP_MCP:-no}"
+    echo "  Skip MCP setup:     ${SKIP_MCP:-no}"
     echo "  Dry run:          ${DRY_RUN:-no}"
     echo
 
-    trap 'last_exit=$?; 
-    if [ $last_exit -ne 0 ]; then
-        echo
-        echo -e "${RED}============================================${NC}"
-        echo -e "${RED}Installation failed at step $CURRENT_STEP ($((CURRENT_STEP * 100 / TOTAL_STEPS))%)${NC}"
-        echo -e "${RED}Error code: $last_exit${NC}"
-        echo
-        echo "Troubleshooting:"
-        echo "  1. Check Python 3.11+ is installed: python3 --version"
-        echo "  2. Check network connectivity: curl -fsSL https://github.com"
-        echo "  3. Check write permissions to: $INSTALL_DIR"
-        echo "  4. For verbose output, run with: bash -x scripts/install.sh"
-        echo -e "${RED}============================================${NC}"
-        exit $last_exit
-    fi' ERR
-
-    log_progress "Checking prerequisites"
     check_prerequisites
-
-    log_progress "Checking network connectivity"
     check_network
-
-    log_progress "Detecting operating system"
     detect_os
 
-    log_progress "Detecting MCP clients"
     if [ "$DRY_RUN" = "1" ]; then
         log_warn "[DRY RUN] Would proceed with installation"
         log_info "Would detect MCP clients: $(detect_mcp_clients 2>&1 | grep -c 'Found' 2>/dev/null || echo '0')"
@@ -502,21 +460,13 @@ main() {
         log_info "Dry run complete. Run without DRY_RUN=1 to install."
         exit 0
     fi
+
     detect_mcp_clients
-
-    log_progress "Creating installation directory"
     create_install_dir
-
-    log_progress "Setting up Python virtual environment"
     setup_venv
-
-    log_progress "Installing Meridian"
     install_meridian
-
-    log_progress "Creating knowledge base"
     create_knowledge_base
 
-    log_progress "Setting up MCP clients"
     if [ "$SKIP_MCP" != "1" ]; then
         setup_mcp_clients
     else

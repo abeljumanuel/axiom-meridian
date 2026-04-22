@@ -251,6 +251,24 @@ def promote_rule(rule_id: str, new_scope_id: str) -> str:
 
 
 @mcp.tool()
+def create_project(project_id: str, name: str | None = None, parent_scope: str = "global") -> str:
+    """Create a new project scope and its knowledge base directories."""
+    tool_name = "create_project"
+    params = {"project_id": project_id, "name": name, "parent_scope": parent_scope}
+    project_id_from_scope = project_id
+
+    def _impl() -> dict:
+        return knowledge_management.create_project(
+            _get_conn(),
+            project_id,
+            name=name,
+            parent_scope=parent_scope,
+        )
+
+    return _security_pattern(tool_name, params, project_id_from_scope, _impl)
+
+
+@mcp.tool()
 def generate_embeddings(scope_id: str | None = None) -> str:
     tool_name = "generate_embeddings"
     params = {"scope_id": scope_id}

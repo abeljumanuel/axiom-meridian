@@ -45,6 +45,11 @@ EXPECTED: dict[str, dict[str, Any]] = {
         "proposal_id": (str, inspect.Parameter.empty),
         "reason": (str | None, None),
     },
+    "create_project": {
+        "project_id": (str, inspect.Parameter.empty),
+        "name": (str | None, None),
+        "parent_scope": (str, "global"),
+    },
     "promote_rule": {
         "rule_id": (str, inspect.Parameter.empty),
         "new_scope_id": (str, inspect.Parameter.empty),

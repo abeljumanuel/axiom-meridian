@@ -1,6 +1,5 @@
 """Unit tests for ID generators."""
 
-import sqlite3
 import tempfile
 from pathlib import Path
 
@@ -51,7 +50,7 @@ def test_next_lesson_code():
     conn = _temp_db()
     try:
         result = next_lesson_code(conn, "project-project-example")
-        assert result == "LL-PSP-001"
+        assert result == "LL-PROJECT-001"
     finally:
         conn.close()
 

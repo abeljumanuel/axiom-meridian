@@ -137,6 +137,7 @@ CREATE TABLE pending_proposals (
   id                   TEXT PRIMARY KEY,
   type                 TEXT NOT NULL,
   scope_id             TEXT REFERENCES scopes(id),
+  target_id            TEXT,
   proposed_text        TEXT NOT NULL,
   metadata             TEXT,
   suggested_attributes TEXT,
@@ -169,6 +170,7 @@ CREATE INDEX idx_scope_attributes_key_value ON scope_attributes(key, value);
 CREATE INDEX idx_rule_attributes_key_value ON rule_attributes(key, value);
 CREATE INDEX idx_lessons_scope_id ON lessons(scope_id);
 CREATE INDEX idx_pending_proposals_status ON pending_proposals(status);
+CREATE INDEX idx_pending_proposals_target_id ON pending_proposals(target_id);
 CREATE INDEX idx_access_log_timestamp ON access_log(timestamp);
 CREATE INDEX idx_access_log_tool_name ON access_log(tool_name);
 

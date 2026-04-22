@@ -5,7 +5,7 @@
 #
 # Usage:
 #   Local:     bash scripts/install.sh
-#   Remote:    curl -fsSL https://raw.githubusercontent.com/axiom-juma/meridian/main/scripts/install.sh | bash
+#   Remote:    curl -fsSL https://raw.githubusercontent.com/abeljumanuel/axiom-meridian/main/scripts/install.sh | bash
 #
 # Options:
 #   INSTALL_DIR=/path/to/install   - Custom installation directory (default: ~/.meridian)

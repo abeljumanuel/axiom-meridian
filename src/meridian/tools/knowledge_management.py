@@ -168,6 +168,174 @@ def _extract_lesson_fields(block_text: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
+def _new_index_result() -> dict:
+    """Fresh accumulator shared by the rule/lesson markdown indexers."""
+    return {
+        "indexed": 0,
+        "created": 0,
+        "updated": 0,
+        "by_scope": {},
+        "errors": [],
+        "warnings": [],
+    }
+
+
+def _record_indexed(result: dict, scope_id: str) -> None:
+    """Bump the indexed count and per-scope tally after a block is written."""
+    result["indexed"] += 1
+    result["by_scope"][scope_id] = result["by_scope"].get(scope_id, 0) + 1
+
+
+def _insert_indexed_rule(conn: sqlite3.Connection, block, scope_id: str, clean_text: str) -> None:
+    """Insert a rule discovered by atomic indexing, plus its CREATED history entry."""
+    rule_id = block.code
+    conn.execute(
+        """
+        INSERT INTO rules
+        (id, scope_id, code, text, category, severity,
+         applies_to, tags, file_path, file_offset, byte_length)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            rule_id,
+            scope_id,
+            block.code,
+            clean_text,
+            block.category or "general",
+            block.severity or "medium",
+            block.applies_to,
+            json.dumps(block.tags),
+            block.file_path,
+            block.file_offset,
+            block.byte_length,
+        ),
+    )
+    hist_id = next_sequential_id(conn, "rule_history", "rh")
+    conn.execute(
+        """
+        INSERT INTO rule_history
+        (id, rule_id, change_type, new_text)
+        VALUES (?, ?, ?, ?)
+        """,
+        (hist_id, rule_id, "CREATED", clean_text),
+    )
+
+
+def _update_indexed_rule(
+    conn: sqlite3.Connection,
+    block,
+    scope_id: str,
+    existing_id: str,
+    existing_text: str,
+    clean_text: str,
+) -> None:
+    """Overwrite a rule whose atomic block changed, plus its UPDATED history entry."""
+    conn.execute(
+        """
+        UPDATE rules
+        SET text = ?, scope_id = ?, category = ?, severity = ?,
+            applies_to = ?, tags = ?, file_path = ?, file_offset = ?,
+            byte_length = ?, updated_at = datetime('now'), embedding_id = NULL
+        WHERE id = ?
+        """,
+        (
+            clean_text,
+            scope_id,
+            block.category or "general",
+            block.severity or "medium",
+            block.applies_to,
+            json.dumps(block.tags),
+            block.file_path,
+            block.file_offset,
+            block.byte_length,
+            existing_id,
+        ),
+    )
+    hist_id = next_sequential_id(conn, "rule_history", "rh")
+    conn.execute(
+        """
+        INSERT INTO rule_history
+        (id, rule_id, change_type, previous_text, new_text)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (hist_id, existing_id, "UPDATED", existing_text, clean_text),
+    )
+
+
+def _index_rules_atomic(
+    conn: sqlite3.Connection, filepath: str, default_scope_id: str, result: dict
+) -> None:
+    """Parse canonical ``## RN-XXX-NNN`` blocks and upsert them into rules/rule_history."""
+    blocks, warnings = atomic_parse(filepath)
+    result["warnings"].extend(warnings)
+
+    for block in blocks:
+        if not block.code.startswith("RN-"):
+            result["warnings"].append(f"Skipping non-rule block {block.code}")
+            continue
+
+        scope_id = block.scope or default_scope_id
+        cursor = conn.execute("SELECT 1 FROM scopes WHERE id = ?", (scope_id,))
+        if cursor.fetchone() is None:
+            result["errors"].append(
+                f"Scope '{scope_id}' not found for block {block.code}"
+            )
+            continue
+
+        clean_text = strip_private_tags(block.text)
+        cursor = conn.execute(
+            "SELECT id, text FROM rules WHERE code = ?", (block.code,)
+        )
+        row = cursor.fetchone()
+
+        if row is None:
+            _insert_indexed_rule(conn, block, scope_id, clean_text)
+            result["created"] += 1
+        else:
+            existing_id, existing_text = row
+            if existing_text == clean_text:
+                continue
+            _update_indexed_rule(conn, block, scope_id, existing_id, existing_text, clean_text)
+            result["updated"] += 1
+
+        _record_indexed(result, scope_id)
+
+
+def _index_rules_legacy(
+    conn: sqlite3.Connection, filepath: str, default_scope_id: str, result: dict
+) -> None:
+    """Parse legacy ``###`` blocks and stage each as a pending_proposals entry."""
+    legacy_blocks = legacy_parse(filepath, doc_type="rules")
+
+    for block in legacy_blocks:
+        scope_id = default_scope_id
+        proposed_text = strip_private_tags(block.raw_text)
+        metadata = {
+            "category": block.fields.get("Category", "general"),
+            "severity": block.fields.get("Severity", "medium"),
+            "scope_id": scope_id,
+        }
+
+        prop_id = next_sequential_id(conn, "pending_proposals", "prop")
+        conn.execute(
+            """
+            INSERT INTO pending_proposals
+            (id, type, scope_id, proposed_text, metadata, source_type, legacy_original)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                prop_id,
+                "rule",
+                scope_id,
+                proposed_text,
+                json.dumps(metadata),
+                "legacy",
+                block.raw_text,
+            ),
+        )
+        _record_indexed(result, scope_id)
+
+
 def index_rules_from_markdown(
     filepath: str, default_scope_id: str, mode: str = "atomic"
 ) -> dict:
@@ -181,161 +349,12 @@ def index_rules_from_markdown(
     """
     conn = get_connection(get_db_path())
     try:
-        result = {
-            "indexed": 0,
-            "created": 0,
-            "updated": 0,
-            "by_scope": {},
-            "errors": [],
-            "warnings": [],
-        }
-
+        result = _new_index_result()
         try:
             if mode == "atomic":
-                blocks, warnings = atomic_parse(filepath)
-                result["warnings"].extend(warnings)
-
-                for block in blocks:
-                    if not block.code.startswith("RN-"):
-                        result["warnings"].append(
-                            f"Skipping non-rule block {block.code}"
-                        )
-                        continue
-
-                    scope_id = block.scope or default_scope_id
-
-                    cursor = conn.execute(
-                        "SELECT 1 FROM scopes WHERE id = ?", (scope_id,)
-                    )
-                    if cursor.fetchone() is None:
-                        result["errors"].append(
-                            f"Scope '{scope_id}' not found for block {block.code}"
-                        )
-                        continue
-
-                    clean_text = strip_private_tags(block.text)
-
-                    cursor = conn.execute(
-                        "SELECT id, text FROM rules WHERE code = ?", (block.code,)
-                    )
-                    row = cursor.fetchone()
-
-                    if row is None:
-                        rule_id = block.code
-                        conn.execute(
-                            """
-                            INSERT INTO rules
-                            (id, scope_id, code, text, category, severity,
-                             applies_to, tags, file_path, file_offset, byte_length)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            (
-                                rule_id,
-                                scope_id,
-                                block.code,
-                                clean_text,
-                                block.category or "general",
-                                block.severity or "medium",
-                                block.applies_to,
-                                json.dumps(block.tags),
-                                block.file_path,
-                                block.file_offset,
-                                block.byte_length,
-                            ),
-                        )
-                        hist_id = next_sequential_id(conn, "rule_history", "rh")
-                        conn.execute(
-                            """
-                            INSERT INTO rule_history
-                            (id, rule_id, change_type, new_text)
-                            VALUES (?, ?, ?, ?)
-                            """,
-                            (hist_id, rule_id, "CREATED", clean_text),
-                        )
-                        result["created"] += 1
-                    else:
-                        existing_id, existing_text = row
-                        if existing_text != clean_text:
-                            conn.execute(
-                                """
-                                UPDATE rules
-                                SET text = ?, scope_id = ?, category = ?, severity = ?,
-                                    applies_to = ?, tags = ?, file_path = ?, file_offset = ?,
-                                    byte_length = ?, updated_at = datetime('now'), embedding_id = NULL
-                                WHERE id = ?
-                                """,
-                                (
-                                    clean_text,
-                                    scope_id,
-                                    block.category or "general",
-                                    block.severity or "medium",
-                                    block.applies_to,
-                                    json.dumps(block.tags),
-                                    block.file_path,
-                                    block.file_offset,
-                                    block.byte_length,
-                                    existing_id,
-                                ),
-                            )
-                            hist_id = next_sequential_id(conn, "rule_history", "rh")
-                            conn.execute(
-                                """
-                                INSERT INTO rule_history
-                                (id, rule_id, change_type, previous_text, new_text)
-                                VALUES (?, ?, ?, ?, ?)
-                                """,
-                                (
-                                    hist_id,
-                                    existing_id,
-                                    "UPDATED",
-                                    existing_text,
-                                    clean_text,
-                                ),
-                            )
-                            result["updated"] += 1
-                        else:
-                            # unchanged — skip
-                            continue
-
-                    result["indexed"] += 1
-                    result["by_scope"][scope_id] = (
-                        result["by_scope"].get(scope_id, 0) + 1
-                    )
-
+                _index_rules_atomic(conn, filepath, default_scope_id, result)
             elif mode == "legacy":
-                legacy_blocks = legacy_parse(filepath, doc_type="rules")
-
-                for block in legacy_blocks:
-                    scope_id = default_scope_id
-                    proposed_text = strip_private_tags(block.raw_text)
-
-                    metadata = {
-                        "category": block.fields.get("Category", "general"),
-                        "severity": block.fields.get("Severity", "medium"),
-                        "scope_id": scope_id,
-                    }
-
-                    prop_id = next_sequential_id(conn, "pending_proposals", "prop")
-                    conn.execute(
-                        """
-                        INSERT INTO pending_proposals
-                        (id, type, scope_id, proposed_text, metadata, source_type, legacy_original)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            prop_id,
-                            "rule",
-                            scope_id,
-                            proposed_text,
-                            json.dumps(metadata),
-                            "legacy",
-                            block.raw_text,
-                        ),
-                    )
-                    result["indexed"] += 1
-                    result["by_scope"][scope_id] = (
-                        result["by_scope"].get(scope_id, 0) + 1
-                    )
+                _index_rules_legacy(conn, filepath, default_scope_id, result)
             else:
                 raise ValueError(f"Unknown mode: {mode}. Use 'atomic' or 'legacy'.")
 
@@ -348,6 +367,175 @@ def index_rules_from_markdown(
         conn.close()
 
 
+def _insert_indexed_lesson(
+    conn: sqlite3.Connection, block, scope_id: str, fields: dict, what_happened: str
+) -> None:
+    """Insert a lesson discovered by atomic indexing, plus its CREATED history entry."""
+    lesson_id = block.code
+    conn.execute(
+        """
+        INSERT INTO lessons
+        (id, scope_id, code, project, date_occurred, severity,
+         area_affected, what_happened, impact, root_cause,
+         resolution, tags, file_path, file_offset, byte_length)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            lesson_id,
+            scope_id,
+            block.code,
+            fields.get("Proyecto"),
+            fields.get("Fecha"),
+            fields.get("Severidad del impacto", "medium"),
+            fields.get("Área afectada"),
+            what_happened,
+            fields.get("Impacto"),
+            fields.get("Causa raíz"),
+            fields.get("Resolución"),
+            json.dumps(block.tags),
+            block.file_path,
+            block.file_offset,
+            block.byte_length,
+        ),
+    )
+    hist_id = next_sequential_id(conn, "lesson_history", "lh")
+    conn.execute(
+        """
+        INSERT INTO lesson_history
+        (id, lesson_id, change_type)
+        VALUES (?, ?, ?)
+        """,
+        (hist_id, lesson_id, "CREATED"),
+    )
+
+
+def _update_indexed_lesson(
+    conn: sqlite3.Connection,
+    block,
+    scope_id: str,
+    fields: dict,
+    existing_id: str,
+    what_happened: str,
+) -> None:
+    """Overwrite a lesson whose atomic block changed, plus its history entry."""
+    conn.execute(
+        """
+        UPDATE lessons
+        SET what_happened = ?, scope_id = ?, project = ?,
+            date_occurred = ?, severity = ?, area_affected = ?,
+            impact = ?, root_cause = ?, resolution = ?,
+            tags = ?, file_path = ?, file_offset = ?,
+            byte_length = ?, embedding_id = NULL
+        WHERE id = ?
+        """,
+        (
+            what_happened,
+            scope_id,
+            fields.get("Proyecto"),
+            fields.get("Fecha"),
+            fields.get("Severidad del impacto", "medium"),
+            fields.get("Área afectada"),
+            fields.get("Impacto"),
+            fields.get("Causa raíz"),
+            fields.get("Resolución"),
+            json.dumps(block.tags),
+            block.file_path,
+            block.file_offset,
+            block.byte_length,
+            existing_id,
+        ),
+    )
+    hist_id = next_sequential_id(conn, "lesson_history", "lh")
+    conn.execute(
+        """
+        INSERT INTO lesson_history
+        (id, lesson_id, change_type, reason)
+        VALUES (?, ?, ?, ?)
+        """,
+        (hist_id, existing_id, "DEPRECATED", "Updated via re-index"),
+    )
+
+
+def _index_lessons_atomic(
+    conn: sqlite3.Connection, filepath: str, default_scope_id: str, result: dict
+) -> None:
+    """Parse canonical ``## LL-XXX-NNN`` blocks and upsert them into lessons/lesson_history."""
+    blocks, warnings = atomic_parse(filepath)
+    result["warnings"].extend(warnings)
+
+    raw_bytes = Path(filepath).read_bytes()
+
+    for block in blocks:
+        if not block.code.startswith("LL-"):
+            result["warnings"].append(f"Skipping non-lesson block {block.code}")
+            continue
+
+        scope_id = block.scope or default_scope_id
+        cursor = conn.execute("SELECT 1 FROM scopes WHERE id = ?", (scope_id,))
+        if cursor.fetchone() is None:
+            result["errors"].append(
+                f"Scope '{scope_id}' not found for block {block.code}"
+            )
+            continue
+
+        block_bytes = raw_bytes[block.file_offset : block.file_offset + block.byte_length]
+        block_text = block_bytes.decode("utf-8")
+        fields = _extract_lesson_fields(block_text)
+        what_happened = strip_private_tags(fields.get("Qué pasó", block.text))
+
+        cursor = conn.execute(
+            "SELECT id, what_happened FROM lessons WHERE code = ?",
+            (block.code,),
+        )
+        row = cursor.fetchone()
+
+        if row is None:
+            _insert_indexed_lesson(conn, block, scope_id, fields, what_happened)
+            result["created"] += 1
+        else:
+            existing_id, existing_text = row
+            if existing_text == what_happened:
+                continue
+            _update_indexed_lesson(conn, block, scope_id, fields, existing_id, what_happened)
+            result["updated"] += 1
+
+        _record_indexed(result, scope_id)
+
+
+def _index_lessons_legacy(
+    conn: sqlite3.Connection, filepath: str, default_scope_id: str, result: dict
+) -> None:
+    """Parse legacy ``###`` blocks and stage each as a pending_proposals entry."""
+    legacy_blocks = legacy_parse(filepath, doc_type="lessons")
+
+    for block in legacy_blocks:
+        scope_id = default_scope_id
+        proposed_text = strip_private_tags(block.raw_text)
+        metadata = {
+            "severity": block.fields.get("Severity", "medium"),
+            "scope_id": scope_id,
+        }
+
+        prop_id = next_sequential_id(conn, "pending_proposals", "prop")
+        conn.execute(
+            """
+            INSERT INTO pending_proposals
+            (id, type, scope_id, proposed_text, metadata, source_type, legacy_original)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                prop_id,
+                "lesson",
+                scope_id,
+                proposed_text,
+                json.dumps(metadata),
+                "legacy",
+                block.raw_text,
+            ),
+        )
+        _record_indexed(result, scope_id)
+
+
 def index_lessons_from_markdown(
     filepath: str, default_scope_id: str, mode: str = "atomic"
 ) -> dict:
@@ -358,180 +546,11 @@ def index_lessons_from_markdown(
     """
     conn = get_connection(get_db_path())
     try:
-        result = {
-            "indexed": 0,
-            "created": 0,
-            "updated": 0,
-            "by_scope": {},
-            "errors": [],
-            "warnings": [],
-        }
-
+        result = _new_index_result()
         if mode == "atomic":
-            blocks, warnings = atomic_parse(filepath)
-            result["warnings"].extend(warnings)
-
-            path = Path(filepath)
-            raw_bytes = path.read_bytes()
-
-            for block in blocks:
-                if not block.code.startswith("LL-"):
-                    result["warnings"].append(
-                        f"Skipping non-lesson block {block.code}"
-                    )
-                    continue
-
-                scope_id = block.scope or default_scope_id
-
-                cursor = conn.execute(
-                    "SELECT 1 FROM scopes WHERE id = ?", (scope_id,)
-                )
-                if cursor.fetchone() is None:
-                    result["errors"].append(
-                        f"Scope '{scope_id}' not found for block {block.code}"
-                    )
-                    continue
-
-                block_bytes = raw_bytes[
-                    block.file_offset : block.file_offset + block.byte_length
-                ]
-                block_text = block_bytes.decode("utf-8")
-                fields = _extract_lesson_fields(block_text)
-
-                what_happened = strip_private_tags(
-                    fields.get("Qué pasó", block.text)
-                )
-
-                cursor = conn.execute(
-                    "SELECT id, what_happened FROM lessons WHERE code = ?",
-                    (block.code,),
-                )
-                row = cursor.fetchone()
-
-                if row is None:
-                    lesson_id = block.code
-                    conn.execute(
-                        """
-                        INSERT INTO lessons
-                        (id, scope_id, code, project, date_occurred, severity,
-                         area_affected, what_happened, impact, root_cause,
-                         resolution, tags, file_path, file_offset, byte_length)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            lesson_id,
-                            scope_id,
-                            block.code,
-                            fields.get("Proyecto"),
-                            fields.get("Fecha"),
-                            fields.get("Severidad del impacto", "medium"),
-                            fields.get("Área afectada"),
-                            what_happened,
-                            fields.get("Impacto"),
-                            fields.get("Causa raíz"),
-                            fields.get("Resolución"),
-                            json.dumps(block.tags),
-                            block.file_path,
-                            block.file_offset,
-                            block.byte_length,
-                        ),
-                    )
-                    hist_id = next_sequential_id(conn, "lesson_history", "lh")
-                    conn.execute(
-                        """
-                        INSERT INTO lesson_history
-                        (id, lesson_id, change_type)
-                        VALUES (?, ?, ?)
-                        """,
-                        (hist_id, lesson_id, "CREATED"),
-                    )
-                    result["created"] += 1
-                else:
-                    existing_id, existing_text = row
-                    if existing_text != what_happened:
-                        conn.execute(
-                            """
-                            UPDATE lessons
-                            SET what_happened = ?, scope_id = ?, project = ?,
-                                date_occurred = ?, severity = ?, area_affected = ?,
-                                impact = ?, root_cause = ?, resolution = ?,
-                                tags = ?, file_path = ?, file_offset = ?,
-                                byte_length = ?, embedding_id = NULL
-                            WHERE id = ?
-                            """,
-                            (
-                                what_happened,
-                                scope_id,
-                                fields.get("Proyecto"),
-                                fields.get("Fecha"),
-                                fields.get("Severidad del impacto", "medium"),
-                                fields.get("Área afectada"),
-                                fields.get("Impacto"),
-                                fields.get("Causa raíz"),
-                                fields.get("Resolución"),
-                                json.dumps(block.tags),
-                                block.file_path,
-                                block.file_offset,
-                                block.byte_length,
-                                existing_id,
-                            ),
-                        )
-                        hist_id = next_sequential_id(conn, "lesson_history", "lh")
-                        conn.execute(
-                            """
-                            INSERT INTO lesson_history
-                            (id, lesson_id, change_type, reason)
-                            VALUES (?, ?, ?, ?)
-                            """,
-                            (
-                                hist_id,
-                                existing_id,
-                                "DEPRECATED",
-                                "Updated via re-index",
-                            ),
-                        )
-                        result["updated"] += 1
-                    else:
-                        continue
-
-                result["indexed"] += 1
-                result["by_scope"][scope_id] = (
-                    result["by_scope"].get(scope_id, 0) + 1
-                )
-
+            _index_lessons_atomic(conn, filepath, default_scope_id, result)
         elif mode == "legacy":
-            legacy_blocks = legacy_parse(filepath, doc_type="lessons")
-
-            for block in legacy_blocks:
-                scope_id = default_scope_id
-                proposed_text = strip_private_tags(block.raw_text)
-
-                metadata = {
-                    "severity": block.fields.get("Severity", "medium"),
-                    "scope_id": scope_id,
-                }
-
-                prop_id = next_sequential_id(conn, "pending_proposals", "prop")
-                conn.execute(
-                    """
-                    INSERT INTO pending_proposals
-                    (id, type, scope_id, proposed_text, metadata, source_type, legacy_original)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        prop_id,
-                        "lesson",
-                        scope_id,
-                        proposed_text,
-                        json.dumps(metadata),
-                        "legacy",
-                        block.raw_text,
-                    ),
-                )
-                result["indexed"] += 1
-                result["by_scope"][scope_id] = (
-                    result["by_scope"].get(scope_id, 0) + 1
-                )
+            _index_lessons_legacy(conn, filepath, default_scope_id, result)
         else:
             raise ValueError(f"Unknown mode: {mode}. Use 'atomic' or 'legacy'.")
 
@@ -550,310 +569,390 @@ def approve_proposal(proposal_id: str) -> dict:
     """Approve a pending proposal and write the atomic block to its .md file."""
     conn = get_connection(get_db_path())
     try:
-        cursor = conn.execute(
-            "SELECT * FROM pending_proposals WHERE id = ?", (proposal_id,)
-        )
-        row = cursor.fetchone()
-        if row is None:
-            raise ValueError(f"Proposal {proposal_id} not found")
-
-        columns = [d[0] for d in cursor.description]
-        proposal = dict(zip(columns, row))
-
-        if proposal["status"] != "pending":
-            raise ValueError(
-                f"Proposal {proposal_id} is not pending (status: {proposal['status']})"
-            )
-
-        scope_id = proposal["scope_id"]
-        prop_type = proposal["type"]
+        proposal = _load_pending_proposal(conn, proposal_id)
         proposed_text = strip_private_tags(proposal["proposed_text"])
         metadata = (
-            json.loads(proposal["metadata"])
-            if proposal.get("metadata")
-            else {}
-        )
-        suggested_attributes = (
-            json.loads(proposal["suggested_attributes"])
-            if proposal.get("suggested_attributes")
-            else []
+            json.loads(proposal["metadata"]) if proposal.get("metadata") else {}
         )
 
-        # Handle UPDATE proposal type
-        if prop_type == "update":
-            target_id = proposal.get("target_id")
-            if target_id is None:
-                raise ValueError(
-                    f"UPDATE proposal {proposal_id} has no target_id"
-                )
-
-            # Determine target table and type from target_id prefix
-            if target_id.startswith("RN-"):
-                target_table = "rules"
-                hist_table = "rule_history"
-                block_builder = _build_rule_atomic_block
-                id_field = "rule_id"
-            elif target_id.startswith("LL-"):
-                target_table = "lessons"
-                hist_table = "lesson_history"
-                block_builder = _build_lesson_atomic_block
-                id_field = "lesson_id"
-            else:
-                raise ValueError(
-                    f"Invalid target_id format: {target_id}. "
-                    "Must start with 'RN-' or 'LL-'."
-                )
-
-            # Fetch target using target_id
-            cursor = conn.execute(f"SELECT * FROM {target_table} WHERE id = ?", (target_id,))
-            row = cursor.fetchone()
-            if row is None:
-                raise ValueError(f"Target '{target_id}' not found in {target_table}")
-
-            target_columns = [d[0] for d in cursor.description]
-            target = dict(zip(target_columns, row))
-
-            # Get file path and offset from target
-            scope_id = target["scope_id"]
-            dest_path = Path(target["file_path"])
-            old_offset = target["file_offset"]
-            old_length = target["byte_length"]
-
-            if not dest_path.exists():
-                raise FileNotFoundError(
-                    f"Destination file does not exist: {dest_path}"
-                )
-
-            # Read existing block bytes
-            raw_bytes = dest_path.read_bytes()
-            old_block_bytes = raw_bytes[old_offset : old_offset + old_length]
-            old_block_text = old_block_bytes.decode("utf-8")
-
-            # Build new block text
-            block_text = block_builder(target_id, scope_id, proposed_text, metadata)
-            new_block_bytes = block_text.encode("utf-8")
-            new_length = len(new_block_bytes)
-
-            # Atomic file replacement: byte-level slice
-            new_bytes = raw_bytes[:old_offset] + new_block_bytes + raw_bytes[old_offset + old_length:]
-            dest_path.write_bytes(new_bytes)
-
-            # Start transaction for DB operations
-            conn.execute("BEGIN TRANSACTION")
-
-            try:
-                # Update target row based on type
-                if target_table == "rules":
-                    conn.execute(
-                        """
-                        UPDATE rules
-                        SET text = ?, category = ?, severity = ?,
-                            applies_to = ?, tags = ?, file_offset = ?,
-                            byte_length = ?, updated_at = datetime('now'),
-                            embedding_id = NULL
-                        WHERE id = ?
-                        """,
-                        (
-                            proposed_text,
-                            metadata.get("category", target.get("category", "general")),
-                            metadata.get("severity", target.get("severity", "medium")),
-                            metadata.get("applies_to", target.get("applies_to", "**/*")),
-                            json.dumps(_normalize_tags(metadata.get("tags", []))),
-                            old_offset,
-                            new_length,
-                            target_id,
-                        ),
-                    )
-                else:  # lessons
-                    conn.execute(
-                        """
-                        UPDATE lessons
-                        SET what_happened = ?, scope_id = ?, project = ?,
-                            date_occurred = ?, severity = ?, area_affected = ?,
-                            impact = ?, root_cause = ?, resolution = ?,
-                            tags = ?, file_offset = ?, byte_length = ?,
-                            embedding_id = NULL
-                        WHERE id = ?
-                        """,
-                        (
-                            proposed_text,
-                            scope_id,
-                            metadata.get("project", target.get("project")),
-                            metadata.get("date_occurred", target.get("date_occurred")),
-                            metadata.get("severity", target.get("severity", "medium")),
-                            metadata.get("area_affected", target.get("area_affected")),
-                            metadata.get("impact", target.get("impact")),
-                            metadata.get("root_cause", target.get("root_cause")),
-                            metadata.get("resolution", target.get("resolution")),
-                            json.dumps(_normalize_tags(metadata.get("tags", []))),
-                            old_offset,
-                            new_length,
-                            target_id,
-                        ),
-                    )
-
-                # Record history with change_type="UPDATED"
-                hist_id = next_sequential_id(conn, hist_table, "rh" if target_table == "rules" else "lh")
-                conn.execute(
-                    f"""
-                    INSERT INTO {hist_table}
-                    (id, {id_field}, change_type, previous_text, new_text)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (hist_id, target_id, "UPDATED", old_block_text, proposed_text),
-                )
-
-                # Update proposal status
-                conn.execute(
-                    "UPDATE pending_proposals SET status = 'approved' WHERE id = ?",
-                    (proposal_id,),
-                )
-
-                conn.commit()
-
-                return {
-                    "proposal_id": proposal_id,
-                    "code": target_id,
-                    "scope_id": scope_id,
-                    "file_path": str(dest_path),
-                    "file_offset": old_offset,
-                    "byte_length": new_length,
-                }
-            except Exception:
-                conn.rollback()
-                raise
-
-        # Handle rule/lesson proposal types (original logic)
-        else:
-            # Generate code
-            if prop_type == "rule":
-                code = next_rule_code(conn, scope_id)
-            elif prop_type == "lesson":
-                code = next_lesson_code(conn, scope_id)
-            else:
-                raise ValueError(f"Unknown proposal type: {prop_type}")
-
-            # Build atomic block
-            if prop_type == "rule":
-                block_text = _build_rule_atomic_block(
-                    code, scope_id, proposed_text, metadata
-                )
-            else:
-                block_text = _build_lesson_atomic_block(
-                    code, scope_id, proposed_text, metadata
-                )
-
-            # Determine destination file
-            dest_path = _scope_to_file_path(scope_id, doc_type=prop_type)
-            if not dest_path.exists():
-                raise FileNotFoundError(
-                    f"Destination file does not exist: {dest_path}"
-                )
-
-            # Append block
-            file_offset, byte_length = _append_atomic_block(dest_path, block_text)
-
-            # Insert into rules / lessons
-            if prop_type == "rule":
-                conn.execute(
-                    """
-                    INSERT INTO rules
-                    (id, scope_id, code, text, category, severity, applies_to,
-                     tags, source_type, source_ref, file_path, file_offset, byte_length)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        code,
-                        scope_id,
-                        code,
-                        proposed_text,
-                        metadata.get("category", "general"),
-                        metadata.get("severity", "medium"),
-                        metadata.get("applies_to", "**/*"),
-                        json.dumps(_normalize_tags(metadata.get("tags"))),
-                        proposal.get("source_type"),
-                        proposal.get("source_ref"),
-                        str(dest_path),
-                        file_offset,
-                        byte_length,
-                    ),
-                )
-
-                hist_id = next_sequential_id(conn, "rule_history", "rh")
-                conn.execute(
-                    """
-                    INSERT INTO rule_history
-                    (id, rule_id, change_type, new_text)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (hist_id, code, "CREATED", proposed_text),
-                )
-
-                for attr in suggested_attributes:
-                    conn.execute(
-                        """
-                        INSERT INTO rule_attributes (rule_id, key, value)
-                        VALUES (?, ?, ?)
-                        """,
-                        (code, attr["key"], attr["value"]),
-                    )
-            else:
-                conn.execute(
-                    """
-                    INSERT INTO lessons
-                    (id, scope_id, code, project, date_occurred, severity,
-                     area_affected, what_happened, impact, root_cause, resolution,
-                     tags, source_type, source_ref, file_path, file_offset, byte_length)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        code,
-                        scope_id,
-                        code,
-                        metadata.get("project"),
-                        metadata.get("date_occurred"),
-                        metadata.get("severity", "medium"),
-                        metadata.get("area_affected"),
-                        proposed_text,
-                        metadata.get("impact"),
-                        metadata.get("root_cause"),
-                        metadata.get("resolution"),
-                        json.dumps(_normalize_tags(metadata.get("tags"))),
-                        proposal.get("source_type"),
-                        proposal.get("source_ref"),
-                        str(dest_path),
-                        file_offset,
-                        byte_length,
-                    ),
-                )
-
-                hist_id = next_sequential_id(conn, "lesson_history", "lh")
-                conn.execute(
-                    """
-                    INSERT INTO lesson_history (id, lesson_id, change_type)
-                    VALUES (?, ?, ?)
-                    """,
-                    (hist_id, code, "CREATED"),
-                )
-
-            # Update proposal status
-            conn.execute(
-                "UPDATE pending_proposals SET status = 'approved' WHERE id = ?",
-                (proposal_id,),
-            )
-
-            conn.commit()
-
-            return {
-                "proposal_id": proposal_id,
-                "code": code,
-                "scope_id": scope_id,
-                "file_path": str(dest_path),
-                "file_offset": file_offset,
-                "byte_length": byte_length,
-            }
+        if proposal["type"] == "update":
+            return _approve_update_proposal(conn, proposal_id, proposal, proposed_text, metadata)
+        return _approve_create_proposal(conn, proposal_id, proposal, proposed_text, metadata)
     finally:
         conn.close()
+
+
+def _load_pending_proposal(conn: sqlite3.Connection, proposal_id: str) -> dict:
+    """Fetch a proposal by id, raising if it doesn't exist or isn't pending."""
+    cursor = conn.execute(
+        "SELECT * FROM pending_proposals WHERE id = ?", (proposal_id,)
+    )
+    row = cursor.fetchone()
+    if row is None:
+        raise ValueError(f"Proposal {proposal_id} not found")
+
+    columns = [d[0] for d in cursor.description]
+    proposal = dict(zip(columns, row))
+    if proposal["status"] != "pending":
+        raise ValueError(
+            f"Proposal {proposal_id} is not pending (status: {proposal['status']})"
+        )
+    return proposal
+
+
+def _resolve_update_target(
+    conn: sqlite3.Connection, target_id: str
+) -> tuple[str, str, callable, str, dict]:
+    """Resolve an UPDATE proposal's target_id (RN-/LL- prefix) to its table,
+    history table, atomic-block builder, and current row."""
+    if target_id.startswith("RN-"):
+        target_table, hist_table, block_builder, id_field = (
+            "rules",
+            "rule_history",
+            _build_rule_atomic_block,
+            "rule_id",
+        )
+    elif target_id.startswith("LL-"):
+        target_table, hist_table, block_builder, id_field = (
+            "lessons",
+            "lesson_history",
+            _build_lesson_atomic_block,
+            "lesson_id",
+        )
+    else:
+        raise ValueError(
+            f"Invalid target_id format: {target_id}. "
+            "Must start with 'RN-' or 'LL-'."
+        )
+
+    cursor = conn.execute(f"SELECT * FROM {target_table} WHERE id = ?", (target_id,))
+    row = cursor.fetchone()
+    if row is None:
+        raise ValueError(f"Target '{target_id}' not found in {target_table}")
+    target_columns = [d[0] for d in cursor.description]
+    target = dict(zip(target_columns, row))
+    return target_table, hist_table, block_builder, id_field, target
+
+
+def _splice_atomic_block(
+    dest_path: Path, old_offset: int, old_length: int, new_block_text: str
+) -> tuple[str, int]:
+    """Replace the byte range [old_offset, old_offset+old_length) in dest_path
+    with new_block_text, preserving everything else in the file untouched.
+
+    Returns the replaced block's original text and the new block's byte length.
+    """
+    raw_bytes = dest_path.read_bytes()
+    old_block_text = raw_bytes[old_offset : old_offset + old_length].decode("utf-8")
+    new_block_bytes = new_block_text.encode("utf-8")
+    new_bytes = raw_bytes[:old_offset] + new_block_bytes + raw_bytes[old_offset + old_length :]
+    dest_path.write_bytes(new_bytes)
+    return old_block_text, len(new_block_bytes)
+
+
+def _update_rule_row(
+    conn: sqlite3.Connection,
+    target_id: str,
+    target: dict,
+    proposed_text: str,
+    metadata: dict,
+    new_offset: int,
+    new_length: int,
+) -> None:
+    """Overwrite an existing rule row with an approved UPDATE proposal's content."""
+    conn.execute(
+        """
+        UPDATE rules
+        SET text = ?, category = ?, severity = ?,
+            applies_to = ?, tags = ?, file_offset = ?,
+            byte_length = ?, updated_at = datetime('now'),
+            embedding_id = NULL
+        WHERE id = ?
+        """,
+        (
+            proposed_text,
+            metadata.get("category", target.get("category", "general")),
+            metadata.get("severity", target.get("severity", "medium")),
+            metadata.get("applies_to", target.get("applies_to", "**/*")),
+            json.dumps(_normalize_tags(metadata.get("tags", []))),
+            new_offset,
+            new_length,
+            target_id,
+        ),
+    )
+
+
+def _update_lesson_row(
+    conn: sqlite3.Connection,
+    target_id: str,
+    target: dict,
+    scope_id: str,
+    proposed_text: str,
+    metadata: dict,
+    new_offset: int,
+    new_length: int,
+) -> None:
+    """Overwrite an existing lesson row with an approved UPDATE proposal's content."""
+    conn.execute(
+        """
+        UPDATE lessons
+        SET what_happened = ?, scope_id = ?, project = ?,
+            date_occurred = ?, severity = ?, area_affected = ?,
+            impact = ?, root_cause = ?, resolution = ?,
+            tags = ?, file_offset = ?, byte_length = ?,
+            embedding_id = NULL
+        WHERE id = ?
+        """,
+        (
+            proposed_text,
+            scope_id,
+            metadata.get("project", target.get("project")),
+            metadata.get("date_occurred", target.get("date_occurred")),
+            metadata.get("severity", target.get("severity", "medium")),
+            metadata.get("area_affected", target.get("area_affected")),
+            metadata.get("impact", target.get("impact")),
+            metadata.get("root_cause", target.get("root_cause")),
+            metadata.get("resolution", target.get("resolution")),
+            json.dumps(_normalize_tags(metadata.get("tags", []))),
+            new_offset,
+            new_length,
+            target_id,
+        ),
+    )
+
+
+def _approve_update_proposal(
+    conn: sqlite3.Connection,
+    proposal_id: str,
+    proposal: dict,
+    proposed_text: str,
+    metadata: dict,
+) -> dict:
+    """Approve an UPDATE proposal: splice its target's atomic block in place
+    and record an UPDATED history entry."""
+    target_id = proposal.get("target_id")
+    if target_id is None:
+        raise ValueError(f"UPDATE proposal {proposal_id} has no target_id")
+
+    target_table, hist_table, block_builder, id_field, target = _resolve_update_target(
+        conn, target_id
+    )
+
+    scope_id = target["scope_id"]
+    dest_path = Path(target["file_path"])
+    old_offset = target["file_offset"]
+    old_length = target["byte_length"]
+    if not dest_path.exists():
+        raise FileNotFoundError(f"Destination file does not exist: {dest_path}")
+
+    block_text = block_builder(target_id, scope_id, proposed_text, metadata)
+    old_block_text, new_length = _splice_atomic_block(
+        dest_path, old_offset, old_length, block_text
+    )
+
+    conn.execute("BEGIN TRANSACTION")
+    try:
+        if target_table == "rules":
+            _update_rule_row(conn, target_id, target, proposed_text, metadata, old_offset, new_length)
+        else:
+            _update_lesson_row(
+                conn, target_id, target, scope_id, proposed_text, metadata, old_offset, new_length
+            )
+
+        hist_id = next_sequential_id(conn, hist_table, "rh" if target_table == "rules" else "lh")
+        conn.execute(
+            f"""
+            INSERT INTO {hist_table}
+            (id, {id_field}, change_type, previous_text, new_text)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (hist_id, target_id, "UPDATED", old_block_text, proposed_text),
+        )
+        conn.execute(
+            "UPDATE pending_proposals SET status = 'approved' WHERE id = ?",
+            (proposal_id,),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+    return {
+        "proposal_id": proposal_id,
+        "code": target_id,
+        "scope_id": scope_id,
+        "file_path": str(dest_path),
+        "file_offset": old_offset,
+        "byte_length": new_length,
+    }
+
+
+def _insert_new_rule(
+    conn: sqlite3.Connection,
+    code: str,
+    scope_id: str,
+    proposed_text: str,
+    metadata: dict,
+    proposal: dict,
+    dest_path: Path,
+    file_offset: int,
+    byte_length: int,
+    suggested_attributes: list[dict],
+) -> None:
+    """Insert a newly-approved rule, its CREATED history entry, and any
+    suggested dynamic attributes (ADR-002)."""
+    conn.execute(
+        """
+        INSERT INTO rules
+        (id, scope_id, code, text, category, severity, applies_to,
+         tags, source_type, source_ref, file_path, file_offset, byte_length)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            code,
+            scope_id,
+            code,
+            proposed_text,
+            metadata.get("category", "general"),
+            metadata.get("severity", "medium"),
+            metadata.get("applies_to", "**/*"),
+            json.dumps(_normalize_tags(metadata.get("tags"))),
+            proposal.get("source_type"),
+            proposal.get("source_ref"),
+            str(dest_path),
+            file_offset,
+            byte_length,
+        ),
+    )
+
+    hist_id = next_sequential_id(conn, "rule_history", "rh")
+    conn.execute(
+        """
+        INSERT INTO rule_history
+        (id, rule_id, change_type, new_text)
+        VALUES (?, ?, ?, ?)
+        """,
+        (hist_id, code, "CREATED", proposed_text),
+    )
+
+    for attr in suggested_attributes:
+        conn.execute(
+            """
+            INSERT INTO rule_attributes (rule_id, key, value)
+            VALUES (?, ?, ?)
+            """,
+            (code, attr["key"], attr["value"]),
+        )
+
+
+def _insert_new_lesson(
+    conn: sqlite3.Connection,
+    code: str,
+    scope_id: str,
+    proposed_text: str,
+    metadata: dict,
+    proposal: dict,
+    dest_path: Path,
+    file_offset: int,
+    byte_length: int,
+) -> None:
+    """Insert a newly-approved lesson and its CREATED history entry."""
+    conn.execute(
+        """
+        INSERT INTO lessons
+        (id, scope_id, code, project, date_occurred, severity,
+         area_affected, what_happened, impact, root_cause, resolution,
+         tags, source_type, source_ref, file_path, file_offset, byte_length)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            code,
+            scope_id,
+            code,
+            metadata.get("project"),
+            metadata.get("date_occurred"),
+            metadata.get("severity", "medium"),
+            metadata.get("area_affected"),
+            proposed_text,
+            metadata.get("impact"),
+            metadata.get("root_cause"),
+            metadata.get("resolution"),
+            json.dumps(_normalize_tags(metadata.get("tags"))),
+            proposal.get("source_type"),
+            proposal.get("source_ref"),
+            str(dest_path),
+            file_offset,
+            byte_length,
+        ),
+    )
+
+    hist_id = next_sequential_id(conn, "lesson_history", "lh")
+    conn.execute(
+        """
+        INSERT INTO lesson_history (id, lesson_id, change_type)
+        VALUES (?, ?, ?)
+        """,
+        (hist_id, code, "CREATED"),
+    )
+
+
+def _approve_create_proposal(
+    conn: sqlite3.Connection,
+    proposal_id: str,
+    proposal: dict,
+    proposed_text: str,
+    metadata: dict,
+) -> dict:
+    """Approve a rule/lesson proposal: assign it a new code, append its atomic
+    block to the scope's markdown file, and insert the corresponding row."""
+    scope_id = proposal["scope_id"]
+    prop_type = proposal["type"]
+    suggested_attributes = (
+        json.loads(proposal["suggested_attributes"])
+        if proposal.get("suggested_attributes")
+        else []
+    )
+
+    if prop_type == "rule":
+        code = next_rule_code(conn, scope_id)
+        block_text = _build_rule_atomic_block(code, scope_id, proposed_text, metadata)
+    elif prop_type == "lesson":
+        code = next_lesson_code(conn, scope_id)
+        block_text = _build_lesson_atomic_block(code, scope_id, proposed_text, metadata)
+    else:
+        raise ValueError(f"Unknown proposal type: {prop_type}")
+
+    dest_path = _scope_to_file_path(scope_id, doc_type=prop_type)
+    if not dest_path.exists():
+        raise FileNotFoundError(f"Destination file does not exist: {dest_path}")
+
+    file_offset, byte_length = _append_atomic_block(dest_path, block_text)
+
+    if prop_type == "rule":
+        _insert_new_rule(
+            conn, code, scope_id, proposed_text, metadata, proposal,
+            dest_path, file_offset, byte_length, suggested_attributes,
+        )
+    else:
+        _insert_new_lesson(
+            conn, code, scope_id, proposed_text, metadata, proposal,
+            dest_path, file_offset, byte_length,
+        )
+
+    conn.execute(
+        "UPDATE pending_proposals SET status = 'approved' WHERE id = ?",
+        (proposal_id,),
+    )
+    conn.commit()
+
+    return {
+        "proposal_id": proposal_id,
+        "code": code,
+        "scope_id": scope_id,
+        "file_path": str(dest_path),
+        "file_offset": file_offset,
+        "byte_length": byte_length,
+    }
 
 
 def edit_proposal(
@@ -1087,7 +1186,6 @@ def promote_rule(rule_id: str, new_scope_id: str) -> dict:
         if cursor.fetchone() is None:
             raise ValueError(f"Scope {new_scope_id} not found")
 
-        # Update original rule status
         conn.execute(
             """
             UPDATE rules
@@ -1097,14 +1195,12 @@ def promote_rule(rule_id: str, new_scope_id: str) -> dict:
             (rule_id,),
         )
 
-        # Best-effort mark in source .md
         file_path = rule.get("file_path")
         file_offset = rule.get("file_offset")
         byte_length = rule.get("byte_length")
         if file_path and file_offset is not None and byte_length is not None:
             _mark_deprecated_in_md(file_path, file_offset, byte_length)
 
-        # Register PROMOTED in history
         hist_id = next_sequential_id(conn, "rule_history", "rh")
         conn.execute(
             """
@@ -1126,6 +1222,89 @@ def promote_rule(rule_id: str, new_scope_id: str) -> dict:
         conn.close()
 
 
+def _rule_embedding_metadata(row: dict) -> dict:
+    """Vector-store metadata for a rule embedding (drives scope/attribute filtering)."""
+    return {
+        "scope_id": row["scope_id"],
+        "category": row["category"],
+        "severity": row["severity"],
+        "applies_to": row.get("applies_to") or "",
+        "tags": row.get("tags") or "[]",
+    }
+
+
+def _lesson_embedding_metadata(row: dict) -> dict:
+    """Vector-store metadata for a lesson embedding (drives scope/attribute filtering)."""
+    return {
+        "scope_id": row["scope_id"],
+        "severity": row["severity"] or "medium",
+        "area_affected": row["area_affected"] or "",
+        "tags": row.get("tags") or "[]",
+    }
+
+
+def _generate_embeddings_for_table(
+    conn: sqlite3.Connection,
+    *,
+    table: str,
+    kind: str,
+    text_column: str,
+    select_columns: str,
+    scope_id: str | None,
+    build_metadata,
+    upsert_fn,
+) -> tuple[int, int, int]:
+    """Embed and upsert every active, un-embedded row of *table* into the vector
+    store. Returns (processed, errors, total_rows); the caller derives its own
+    'skipped' count from those so rules and lessons share one accounting rule.
+    """
+    sql = (
+        f"SELECT id, scope_id, {select_columns} FROM {table} "
+        "WHERE status = 'active' AND embedding_id IS NULL"
+    )
+    params: list[object] = []
+    if scope_id is not None:
+        sql += " AND scope_id = ?"
+        params.append(scope_id)
+
+    cursor = conn.execute(sql, params)
+    rows = cursor.fetchall()
+    columns = [d[0] for d in cursor.description]
+
+    processed = 0
+    errors = 0
+    if not rows:
+        return processed, errors, len(rows)
+
+    texts = [row[columns.index(text_column)] for row in rows]
+    try:
+        embeddings = embedder.generate_embeddings_batch(texts)
+    except Exception as exc:
+        errors += len(rows)
+        logger.exception("Failed to generate embeddings for %s: %s", table, exc)
+        embeddings = []
+
+    for idx, row in enumerate(rows):
+        if idx >= len(embeddings):
+            errors += 1
+            continue
+        row_dict = dict(zip(columns, row))
+        entity_id = row_dict["id"]
+        try:
+            upsert_fn(entity_id, row_dict[text_column], embeddings[idx], build_metadata(row_dict))
+            text_hash = hashlib.sha256(row_dict[text_column].encode()).hexdigest()[:16]
+            conn.execute(
+                f"UPDATE {table} SET embedding_id = ? WHERE id = ?",
+                (text_hash, entity_id),
+            )
+            processed += 1
+        except Exception as exc:
+            errors += 1
+            logger.exception("Failed to upsert %s %s: %s", kind, entity_id, exc)
+
+    return processed, errors, len(rows)
+
+
 def generate_embeddings(
     conn: sqlite3.Connection, scope_id: str | None = None
 ) -> dict:
@@ -1141,121 +1320,34 @@ def generate_embeddings(
               "duration_seconds": float}
     """
     start = time.perf_counter()
-    processed = 0
-    skipped = 0
-    errors = 0
 
-    # --- Rules ---
-    rule_sql = (
-        "SELECT id, scope_id, code, text, category, severity, applies_to, tags "
-        "FROM rules WHERE status = 'active' AND embedding_id IS NULL"
+    rules_processed, rules_errors, rules_total = _generate_embeddings_for_table(
+        conn,
+        table="rules",
+        kind="rule",
+        text_column="text",
+        select_columns="code, text, category, severity, applies_to, tags",
+        scope_id=scope_id,
+        build_metadata=_rule_embedding_metadata,
+        upsert_fn=vector_store.upsert_rule,
     )
-    rule_params: list[object] = []
-    if scope_id is not None:
-        rule_sql += " AND scope_id = ?"
-        rule_params.append(scope_id)
-
-    cursor = conn.execute(rule_sql, rule_params)
-    rule_rows = cursor.fetchall()
-    rule_columns = [d[0] for d in cursor.description]
-
-    if rule_rows:
-        texts = [row[rule_columns.index("text")] for row in rule_rows]
-        try:
-            embeddings = embedder.generate_embeddings_batch(texts)
-        except Exception as exc:
-            errors += len(rule_rows)
-            logger.exception("Failed to generate embeddings for rules: %s", exc)
-            embeddings = []
-
-        for idx, row in enumerate(rule_rows):
-            if idx >= len(embeddings):
-                errors += 1
-                continue
-            row_dict = dict(zip(rule_columns, row))
-            rule_id = row_dict["id"]
-            try:
-                vector_store.upsert_rule(
-                    rule_id=rule_id,
-                    text=row_dict["text"],
-                    embedding=embeddings[idx],
-                    metadata={
-                        "scope_id": row_dict["scope_id"],
-                        "category": row_dict["category"],
-                        "severity": row_dict["severity"],
-                        "applies_to": row_dict.get("applies_to") or "",
-                        "tags": row_dict.get("tags") or "[]",
-                    },
-                )
-                text_hash = hashlib.sha256(row_dict["text"].encode()).hexdigest()[:16]
-                conn.execute(
-                    "UPDATE rules SET embedding_id = ? WHERE id = ?",
-                    (text_hash, rule_id),
-                )
-                processed += 1
-            except Exception as exc:
-                errors += 1
-                logger.exception("Failed to upsert rule %s: %s", rule_id, exc)
-    skipped += len(rule_rows) - processed - errors
-
-    # --- Lessons ---
-    lesson_sql = (
-        "SELECT id, scope_id, code, what_happened, severity, area_affected, tags "
-        "FROM lessons WHERE status = 'active' AND embedding_id IS NULL"
+    lessons_processed, lessons_errors, lessons_total = _generate_embeddings_for_table(
+        conn,
+        table="lessons",
+        kind="lesson",
+        text_column="what_happened",
+        select_columns="code, what_happened, severity, area_affected, tags",
+        scope_id=scope_id,
+        build_metadata=_lesson_embedding_metadata,
+        upsert_fn=vector_store.upsert_lesson,
     )
-    lesson_params: list[object] = []
-    if scope_id is not None:
-        lesson_sql += " AND scope_id = ?"
-        lesson_params.append(scope_id)
 
-    cursor = conn.execute(lesson_sql, lesson_params)
-    lesson_rows = cursor.fetchall()
-    lesson_columns = [d[0] for d in cursor.description]
-
-    lesson_processed = 0
-    lesson_errors = 0
-    if lesson_rows:
-        texts = [
-            row[lesson_columns.index("what_happened")] for row in lesson_rows
-        ]
-        try:
-            embeddings = embedder.generate_embeddings_batch(texts)
-        except Exception as exc:
-            lesson_errors += len(lesson_rows)
-            logger.exception("Failed to generate embeddings for lessons: %s", exc)
-            embeddings = []
-
-        for idx, row in enumerate(lesson_rows):
-            if idx >= len(embeddings):
-                lesson_errors += 1
-                continue
-            row_dict = dict(zip(lesson_columns, row))
-            lesson_id = row_dict["id"]
-            try:
-                vector_store.upsert_lesson(
-                    lesson_id=lesson_id,
-                    text=row_dict["what_happened"],
-                    embedding=embeddings[idx],
-                    metadata={
-                        "scope_id": row_dict["scope_id"],
-                        "severity": row_dict["severity"] or "medium",
-                        "area_affected": row_dict["area_affected"] or "",
-                        "tags": row_dict.get("tags") or "[]",
-                    },
-                )
-                text_hash = hashlib.sha256(row_dict["what_happened"].encode()).hexdigest()[:16]
-                conn.execute(
-                    "UPDATE lessons SET embedding_id = ? WHERE id = ?",
-                    (text_hash, lesson_id),
-                )
-                lesson_processed += 1
-            except Exception as exc:
-                lesson_errors += 1
-                logger.exception("Failed to upsert lesson %s: %s", lesson_id, exc)
-
-    processed += lesson_processed
-    errors += lesson_errors
-    skipped += len(lesson_rows) - lesson_processed - lesson_errors
+    processed = rules_processed + lessons_processed
+    errors = rules_errors + lessons_errors
+    skipped = (
+        (rules_total - rules_processed - rules_errors)
+        + (lessons_total - lessons_processed - lessons_errors)
+    )
 
     conn.commit()
     duration = time.perf_counter() - start
@@ -1277,7 +1369,6 @@ def _mark_deprecated_in_md(file_path: str, file_offset: int, byte_length: int) -
     block_bytes = raw_bytes[file_offset : file_offset + byte_length]
     block_text = block_bytes.decode("utf-8")
 
-    # Add **Status:** deprecated after the header line
     lines = block_text.split("\n")
     if len(lines) > 0:
         new_lines = [lines[0], "**Status:** deprecated"] + lines[1:]

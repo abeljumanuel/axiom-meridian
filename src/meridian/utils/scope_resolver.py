@@ -5,17 +5,13 @@ import sqlite3
 
 def resolve_scope_hierarchy(conn: sqlite3.Connection, project_id: str) -> list[str]:
     """
-    Resuelve la cadena de scopes desde el proyecto hasta global.
-    Retorna lista ordenada por precedencia: [project, parent, grandparent, ..., global]
+    Retorna la cadena de scopes ordenada por precedencia: [project, parent, ..., global].
 
-    Algoritmo:
-    1. SELECT parent_id FROM scopes WHERE id = project_id
-    2. Iterar siguiendo parent_id hasta parent_id IS NULL
-    3. Retorna la lista completa incluyendo el project_id inicial
-
-    Si project_id no existe en scopes → lanzar ValueError con scopes válidos listados.
+    Lanza ValueError si project_id no existe en scopes (listando los scopes válidos)
+    o si la jerarquía de parent_id contiene un ciclo.
     """
-    # Normalizar project_id: si no existe pero "project-<id>" sí, usarlo
+    # Los IDs de proyecto pueden llegar sin el prefijo "project-"; se acepta la forma
+    # corta como alias de conveniencia cuando la forma prefijada existe en scopes.
     cursor = conn.execute("SELECT id FROM scopes WHERE id = ?", (project_id,))
     if cursor.fetchone() is None:
         candidate = f"project-{project_id}"
@@ -48,11 +44,7 @@ def resolve_scope_hierarchy(conn: sqlite3.Connection, project_id: str) -> list[s
 
 
 def load_scope_attributes(conn: sqlite3.Connection, scope_id: str) -> dict[str, str]:
-    """
-    SELECT key, value FROM scope_attributes WHERE scope_id = ?
-    Retorna dict: {"framework": "quarkus", "component_role": "gateway"}
-    Si no hay atributos → retorna dict vacío.
-    """
+    """Retorna los atributos dinámicos del scope (ADR-002), o {} si no tiene ninguno."""
     cursor = conn.execute(
         "SELECT key, value FROM scope_attributes WHERE scope_id = ?",
         (scope_id,),
@@ -66,17 +58,13 @@ def filter_by_attributes(
     project_attributes: dict[str, str],
 ) -> list[str]:
     """
-    Filtra reglas por compatibilidad de atributos (ADR-002).
+    Filtra rule_ids por compatibilidad de atributos con el proyecto (ADR-002).
 
-    Para cada rule_id:
-    1. SELECT key, value FROM rule_attributes WHERE rule_id = ?
-    2. Si no hay rule_attributes → INCLUIR (aplica a todos)
-    3. Si hay rule_attributes → INCLUIR solo si TODOS los atributos
-       coinciden con project_attributes (AND logic)
-    4. Si un key de rule_attributes no existe en project_attributes → INCLUIR
-       (inclusión conservadora para prevenir pérdida de conocimiento)
-
-    Retorna lista de rule_ids que pasan el filtro.
+    Una regla sin atributos propios aplica a todos los proyectos. Una regla con
+    atributos se incluye solo si ninguno de ellos contradice project_attributes;
+    un atributo de la regla ausente en el proyecto se trata como compatible
+    (inclusión conservadora) para evitar que el proyecto pierda conocimiento
+    por simple falta de metadata.
     """
     if not rule_ids:
         return []
@@ -99,7 +87,8 @@ def filter_by_attributes(
                 if project_attributes[key] != value:
                     include = False
                     break
-            # Si el key no existe en project_attributes → inclusión conservadora
+            # key ausente en project_attributes: se deja `include` intacto a propósito
+            # (ver docstring — inclusión conservadora, no un caso sin manejar)
 
         if include:
             result.append(rule_id)

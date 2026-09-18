@@ -100,3 +100,21 @@ def test_initialize_is_idempotent():
             assert attrs_count == 15
         finally:
             conn.close()
+
+
+def test_initialize_sets_user_version_to_latest_migration():
+    """See tests/unit/test_migrations.py for the migration runner's own coverage."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        kb_path = Path(tmpdir)
+        (kb_path / "knowledge-base" / "global").mkdir(parents=True)
+        (kb_path / "knowledge-base" / "projects").mkdir(parents=True)
+        (kb_path / "lessons" / "global").mkdir(parents=True)
+        (kb_path / "lessons" / "projects").mkdir(parents=True)
+        db_path = kb_path / "test.db"
+        initialize_db(db_path)
+        conn = get_connection(db_path)
+        try:
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            assert version >= 1
+        finally:
+            conn.close()

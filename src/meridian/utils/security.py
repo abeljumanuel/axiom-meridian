@@ -112,11 +112,11 @@ def extract_safe_params(kwargs: dict[str, Any]) -> str:
     Retorna JSON string.
     """
     safe = {k: v for k, v in kwargs.items() if k not in SENSITIVE_PARAMS}
-    # Truncar valores string largos a 200 caracteres
     for k, v in safe.items():
         if isinstance(v, str) and len(v) > 200:
             safe[k] = v[:200] + "...[truncated]"
-    # Agregar hash truncado para campos sensibles
+    # Hash (nunca el valor en claro) para poder correlacionar accesos repetidos
+    # a un mismo dato sensible sin exponer su contenido en el audit log.
     for k, v in kwargs.items():
         if k in SENSITIVE_PARAMS and isinstance(v, str):
             import hashlib

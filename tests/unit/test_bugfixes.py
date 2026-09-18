@@ -2,14 +2,25 @@
 
 from __future__ import annotations
 
+import pytest
+
 
 class TestTypeNormalization:
     """Tests for type normalization in create_pending_proposal."""
 
-    def test_type_lowercase_normalization(self):
-        """type.lower() should be applied before validation."""
+    def test_type_is_lowercased_before_validation(self):
+        """An uppercase type ("UPDATE") must pass the type-validity check, so the
+        error that surfaces is the next validation down the line (missing
+        target_id) rather than "Invalid proposal type: UPDATE"."""
         from meridian.tools.extraction import create_pending_proposal
-        assert create_pending_proposal.__module__ == "meridian.tools.extraction"
+
+        with pytest.raises(ValueError, match="target_id is required"):
+            create_pending_proposal(
+                conn=None,
+                type="UPDATE",
+                proposed_text="some proposed text",
+                suggested_scope_id="global",
+            )
 
 
 class TestScopeToFilePathFallback:
@@ -23,9 +34,6 @@ class TestScopeToFilePathFallback:
         (kb_path / "knowledge-base" / "projects").mkdir(parents=True)
 
         monkeypatch.setenv("KNOWLEDGE_BASE_PATH", str(kb_path))
-        from meridian import config as meridian_config
-        meridian_config._kb_path = None
-
         from meridian.tools.knowledge_management import _scope_to_file_path
         from meridian.config import get_knowledge_base_path
 
@@ -51,13 +59,13 @@ class TestCreateProject:
 
         monkeypatch.setenv("KNOWLEDGE_BASE_PATH", str(kb_path))
         from meridian.config import get_db_path
-        from meridian.db.connection import initialize_db
+        from meridian.db.connection import get_connection, initialize_db
         from meridian.tools.knowledge_management import create_project
 
         db_path = get_db_path()
         initialize_db(db_path)
 
-        conn = __import__("meridian.db.connection", fromlist=["get_connection"]).get_connection(db_path)
+        conn = get_connection(db_path)
 
         result = create_project(conn, "ms-upi-device-manager", name="MS UPI Device Manager", parent_scope="global-quarkus")
 

@@ -161,6 +161,33 @@ CREATE TABLE access_log (
   transport   TEXT
 );
 
+-- Contadores atómicos de IDs secuenciales (reemplaza MAX(id) LIKE 'prefix-%')
+CREATE TABLE id_counters (
+  name TEXT PRIMARY KEY,
+  next INTEGER NOT NULL
+);
+
+-- Fingerprint de archivos .md indexados (frescura por-archivo, Opción C)
+CREATE TABLE indexed_files (
+  file_path    TEXT PRIMARY KEY,
+  mtime        REAL NOT NULL,
+  content_hash TEXT NOT NULL,
+  updated_at   TEXT DEFAULT (datetime('now'))
+);
+
+-- Tags normalizados (reemplaza el filtro LIKE '%tag%' por matching exacto)
+CREATE TABLE rule_tags (
+  rule_id TEXT NOT NULL REFERENCES rules(id) ON DELETE CASCADE,
+  tag     TEXT NOT NULL,
+  PRIMARY KEY (rule_id, tag)
+);
+
+CREATE TABLE lesson_tags (
+  lesson_id TEXT NOT NULL REFERENCES lessons(id) ON DELETE CASCADE,
+  tag       TEXT NOT NULL,
+  PRIMARY KEY (lesson_id, tag)
+);
+
 -- Índices para rendimiento
 CREATE INDEX idx_rules_scope_id ON rules(scope_id);
 CREATE INDEX idx_rules_severity ON rules(severity);
@@ -173,6 +200,12 @@ CREATE INDEX idx_pending_proposals_status ON pending_proposals(status);
 CREATE INDEX idx_pending_proposals_target_id ON pending_proposals(target_id);
 CREATE INDEX idx_access_log_timestamp ON access_log(timestamp);
 CREATE INDEX idx_access_log_tool_name ON access_log(tool_name);
+CREATE INDEX idx_rule_history_rule_id ON rule_history(rule_id);
+CREATE INDEX idx_lesson_history_lesson_id ON lesson_history(lesson_id);
+CREATE INDEX idx_pending_proposals_scope_id ON pending_proposals(scope_id);
+CREATE INDEX idx_pr_audits_ref_project ON pr_audits(pr_ref, project_id);
+CREATE INDEX idx_rule_tags_tag ON rule_tags(tag);
+CREATE INDEX idx_lesson_tags_tag ON lesson_tags(tag);
 
 -- Inserts iniciales de scopes
 INSERT INTO scopes VALUES ('global',              'global', 'Global',              NULL);

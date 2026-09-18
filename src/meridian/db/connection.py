@@ -3,6 +3,8 @@
 import sqlite3
 from pathlib import Path
 
+from meridian.db.migrations import apply_pending_migrations
+
 REQUIRED_KB_DIRS = [
     "knowledge-base/global",
     "knowledge-base/projects",
@@ -20,7 +22,7 @@ def get_connection(db_path: Path) -> sqlite3.Connection:
 
 
 def initialize_db(db_path: Path) -> None:
-    """Initialize the database if the scopes table does not yet exist."""
+    """Create the schema if missing, then apply any pending migrations."""
     kb_path = db_path.parent
 
     missing = [d for d in REQUIRED_KB_DIRS if not (kb_path / d).is_dir()]
@@ -38,12 +40,12 @@ def initialize_db(db_path: Path) -> None:
         cursor = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='scopes'"
         )
-        if cursor.fetchone() is not None:
-            return
+        if cursor.fetchone() is None:
+            schema_path = Path(__file__).parent / "schema.sql"
+            sql = schema_path.read_text(encoding="utf-8")
+            conn.executescript(sql)
+            conn.commit()
 
-        schema_path = Path(__file__).parent / "schema.sql"
-        sql = schema_path.read_text(encoding="utf-8")
-        conn.executescript(sql)
-        conn.commit()
+        apply_pending_migrations(conn, db_path)
     finally:
         conn.close()

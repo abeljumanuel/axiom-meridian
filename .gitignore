@@ -51,3 +51,7 @@ htmlcov/
 
 # Logs
 *.log
+
+# Local MCP client config — contains this machine's absolute venv path,
+# never portable across machines. Track opencode.json.example instead.
+opencode.json

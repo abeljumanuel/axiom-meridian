@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from pathlib import Path
 from typing import Any
 
 from meridian.config import get_db_path
 from meridian.db.connection import get_connection
 from meridian.rag import embedder, vector_store
+from meridian.utils.read_index import check_files_fresh
 from meridian.utils.scope_resolver import (
     filter_by_attributes,
     load_scope_attributes,
@@ -18,30 +18,34 @@ from meridian.utils.scope_resolver import (
 from meridian.utils.serializers import serialize
 
 
-def _read_positional_text(
-    file_path: str | None,
-    file_offset: int | None,
-    byte_length: int | None,
-    fallback_text: str | None = None,
-) -> dict[str, Any]:
-    """Read text via file_offset + byte_length with STALE_INDEX detection."""
-    result: dict[str, Any] = {"text": fallback_text}
-    if not file_path or file_offset is None or byte_length is None:
-        return result
-    path = Path(file_path)
-    if not path.exists():
-        result["text"] = None
-        result["error"] = "STALE_INDEX"
-        return result
-    current_size = path.stat().st_size
-    if file_offset + byte_length > current_size:
-        result["text"] = None
-        result["error"] = "STALE_INDEX"
-        return result
-    raw_bytes = path.read_bytes()
-    chunk = raw_bytes[file_offset : file_offset + byte_length]
-    result["text"] = chunk.decode("utf-8")
-    return result
+def _resolve_full_text(
+    rows: list[dict[str, Any]],
+    conn: sqlite3.Connection,
+    source_field: str,
+) -> list[dict[str, Any]]:
+    """Return one {"text": ...} or {"text": None, "error": "STALE_INDEX"} per
+    row in `rows`, aligned by position, for detail="full" queries.
+
+    Reads from `source_field` (the value already loaded by `SELECT *`) —
+    never rereads the .md file per row. Rows without a `file_path` (RAG
+    results, whose text lives only in ChromaDB) always serve their embedded
+    text as-is. Rows with a `file_path` serve it only if that file is fresh
+    per `indexed_files` (one check per distinct file, not per row); a stale
+    or unindexed file yields `text: None, error: "STALE_INDEX"` — same shape
+    as before (ADR-001), just resolved at file granularity instead of
+    per-row byte offsets (ADR-005).
+    """
+    file_paths = [r["file_path"] for r in rows if r.get("file_path")]
+    freshness = check_files_fresh(conn, file_paths) if file_paths else {}
+
+    resolved: list[dict[str, Any]] = []
+    for r in rows:
+        file_path = r.get("file_path")
+        if not file_path or freshness.get(file_path):
+            resolved.append({"text": r.get(source_field)})
+        else:
+            resolved.append({"text": None, "error": "STALE_INDEX"})
+    return resolved
 
 
 def _normalize_rag_rule(candidate: dict) -> dict[str, Any]:
@@ -147,13 +151,14 @@ def query_rules(
                 sql += " AND severity = ?"
                 params.append(severity)
             if tags is not None:
-                if isinstance(tags, str):
-                    sql += " AND tags LIKE ?"
-                    params.append(f"%{tags}%")
-                elif isinstance(tags, list):
-                    or_clauses = " OR ".join("tags LIKE ?" for _ in tags)
-                    sql += f" AND ({or_clauses})"
-                    params.extend(f"%{t}%" for t in tags)
+                tag_list = [tags] if isinstance(tags, str) else list(tags)
+                if tag_list:
+                    or_clauses = " OR ".join("rt.tag = ?" for _ in tag_list)
+                    sql += (
+                        " AND EXISTS (SELECT 1 FROM rule_tags rt "
+                        f"WHERE rt.rule_id = rules.id AND ({or_clauses}))"
+                    )
+                    params.extend(tag_list)
 
             cursor = conn.execute(sql, params)
             columns = [d[0] for d in cursor.description]
@@ -180,17 +185,11 @@ def query_rules(
             )
 
         if detail == "full":
-            output: list[dict[str, Any]] = []
-            for r in results:
-                row: dict[str, Any] = {k: r[k] for k in summary_fields}
-                pos = _read_positional_text(
-                    r.get("file_path"),
-                    r.get("file_offset"),
-                    r.get("byte_length"),
-                    fallback_text=r.get("text"),
-                )
-                row.update(pos)
-                output.append(row)
+            resolved = _resolve_full_text(results, conn, "text")
+            output = [
+                {**{k: r[k] for k in summary_fields}, **pos}
+                for r, pos in zip(results, resolved)
+            ]
             return serialize(
                 output, format, full_fields if format == "toon" else None
             )
@@ -263,13 +262,14 @@ def query_lessons(
                 sql += " AND area_affected = ?"
                 params.append(area)
             if tags is not None:
-                if isinstance(tags, str):
-                    sql += " AND tags LIKE ?"
-                    params.append(f"%{tags}%")
-                elif isinstance(tags, list):
-                    or_clauses = " OR ".join("tags LIKE ?" for _ in tags)
-                    sql += f" AND ({or_clauses})"
-                    params.extend(f"%{t}%" for t in tags)
+                tag_list = [tags] if isinstance(tags, str) else list(tags)
+                if tag_list:
+                    or_clauses = " OR ".join("lt.tag = ?" for _ in tag_list)
+                    sql += (
+                        " AND EXISTS (SELECT 1 FROM lesson_tags lt "
+                        f"WHERE lt.lesson_id = lessons.id AND ({or_clauses}))"
+                    )
+                    params.extend(tag_list)
 
             cursor = conn.execute(sql, params)
             columns = [d[0] for d in cursor.description]
@@ -290,17 +290,11 @@ def query_lessons(
             )
 
         if detail == "full":
-            output: list[dict[str, Any]] = []
-            for r in results:
-                row: dict[str, Any] = {k: r[k] for k in summary_fields}
-                pos = _read_positional_text(
-                    r.get("file_path"),
-                    r.get("file_offset"),
-                    r.get("byte_length"),
-                    fallback_text=r.get("what_happened"),
-                )
-                row.update(pos)
-                output.append(row)
+            resolved = _resolve_full_text(results, conn, "what_happened")
+            output = [
+                {**{k: r[k] for k in summary_fields}, **pos}
+                for r, pos in zip(results, resolved)
+            ]
             return serialize(
                 output, format, full_fields if format == "toon" else None
             )
@@ -393,13 +387,8 @@ def get_rule_context(
         columns = [d[0] for d in cursor.description]
         rule = dict(zip(columns, row))
 
-        pos = _read_positional_text(
-            rule.get("file_path"),
-            rule.get("file_offset"),
-            rule.get("byte_length"),
-            fallback_text=rule.get("text"),
-        )
-        rule.update(pos)
+        [rule_pos] = _resolve_full_text([rule], conn, "text")
+        rule.update(rule_pos)
 
         cursor = conn.execute(
             "SELECT * FROM rule_history WHERE rule_id = ? ORDER BY changed_at",
@@ -419,17 +408,14 @@ def get_rule_context(
             (rule_id,),
         )
         lesson_columns = [d[0] for d in cursor.description]
-        lessons: list[dict[str, Any]] = []
-        for lesson_row in cursor.fetchall():
-            lesson = dict(zip(lesson_columns, lesson_row))
-            pos_lesson = _read_positional_text(
-                lesson.get("file_path"),
-                lesson.get("file_offset"),
-                lesson.get("byte_length"),
-                fallback_text=lesson.get("what_happened"),
-            )
+        lessons = [
+            dict(zip(lesson_columns, lesson_row))
+            for lesson_row in cursor.fetchall()
+        ]
+        for lesson, pos_lesson in zip(
+            lessons, _resolve_full_text(lessons, conn, "what_happened")
+        ):
             lesson.update(pos_lesson)
-            lessons.append(lesson)
 
         return {
             "rule": rule,

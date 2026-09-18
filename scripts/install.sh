@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Meridian Installer
+# Meridian Installer (Linux / macOS)
 # Installs Axiom Meridian MCP server
 #
 # Usage:
@@ -11,8 +11,13 @@
 #   INSTALL_DIR=/path/to/install   - Custom installation directory (default: ~/.meridian)
 #   KNOWLEDGE_BASE_PATH=/path    - Custom knowledge base path
 #   SKIP_MCP=1                    - Skip MCP client configuration
+#   SEED_KB=1                     - Copy+index the repo's example knowledge base without asking
+#   SEED_KB=0                     - Skip seeding the example knowledge base without asking
 #   DRY_RUN=1                     - Show what would be done without executing
 #
+# Prefers `uv` (https://docs.astral.sh/uv/) when available — matches the
+# tooling the rest of the project uses and resolves dependencies faster.
+# Falls back to plain python3 -m venv + pip when uv isn't installed.
 
 set -e
 
@@ -47,8 +52,19 @@ log_step() {
 check_prerequisites() {
     log_step "Checking prerequisites..."
 
+    if command -v uv &> /dev/null; then
+        USE_UV=1
+        log_info "uv found — using it for a faster, more reliable install"
+        log_info "uv can fetch its own Python 3.11 if the system one is older, so no separate Python version check is needed here."
+        return
+    fi
+
+    USE_UV=0
+    log_warn "uv not found — falling back to python3 -m venv + pip"
+    log_warn "Install uv for a faster setup that doesn't require a system Python 3.11: https://docs.astral.sh/uv/"
+
     if ! command -v python3 &> /dev/null; then
-        log_error "Python 3.11+ is required but not found."
+        log_error "Python 3.11+ is required but not found (and uv is not installed to fetch one)."
         exit 1
     fi
 
@@ -57,7 +73,7 @@ check_prerequisites() {
     PYTHON_MINOR=$(echo "$PYTHON_VERSION" | cut -d. -f2)
 
     if [ "$PYTHON_MAJOR" -lt 3 ] || { [ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 11 ]; }; then
-        log_error "Python 3.11+ is required. Found: $PYTHON_VERSION"
+        log_error "Python 3.11+ is required. Found: $PYTHON_VERSION (and uv is not installed to fetch one)."
         exit 1
     fi
 
@@ -87,7 +103,7 @@ detect_os() {
     elif [ "$(uname)" = "Linux" ]; then
         OS="linux"
     else
-        log_error "Unsupported operating system"
+        log_error "Unsupported operating system. For Windows, use scripts/install.ps1 instead."
         exit 1
     fi
     log_info "Detected OS: $OS"
@@ -151,14 +167,18 @@ setup_venv() {
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             rm -rf "$VENV_DIR"
-            python3 -m venv "$VENV_DIR"
+        else
+            return
         fi
-    else
-        python3 -m venv "$VENV_DIR"
     fi
 
-    log_info "Installing dependencies..."
-    "$BIN_DIR/pip" install --upgrade pip wheel
+    if [ "$USE_UV" = "1" ]; then
+        uv venv --python 3.11 "$VENV_DIR"
+    else
+        python3 -m venv "$VENV_DIR"
+        log_info "Upgrading pip..."
+        "$BIN_DIR/pip" install --upgrade pip wheel
+    fi
 }
 
 install_meridian() {
@@ -166,12 +186,34 @@ install_meridian() {
 
     cd "$(dirname "$SCRIPT_DIR")"
 
-    if [ -f "pyproject.toml" ]; then
-        "$BIN_DIR/pip" install -e .
-    else
+    if [ ! -f "pyproject.toml" ]; then
         log_error "pyproject.toml not found. Run from Meridian repository."
         exit 1
     fi
+
+    if [ "$USE_UV" = "1" ]; then
+        VIRTUAL_ENV="$VENV_DIR" uv pip install -e .
+    else
+        "$BIN_DIR/pip" install -e .
+    fi
+}
+
+verify_install() {
+    log_info "Verifying installation..."
+
+    if [ ! -x "$BIN_DIR/meridian" ]; then
+        log_error "Install verification failed: $BIN_DIR/meridian was not created."
+        log_error "The editable install did not register the 'meridian' entry point."
+        exit 1
+    fi
+
+    if ! INSTALLED_VERSION="$("$BIN_DIR/meridian" version 2>&1)"; then
+        log_error "Install verification failed: '$BIN_DIR/meridian version' did not run cleanly."
+        log_error "Output: $INSTALLED_VERSION"
+        exit 1
+    fi
+
+    log_info "Verified: $INSTALLED_VERSION"
 }
 
 create_knowledge_base() {
@@ -189,15 +231,84 @@ create_knowledge_base() {
     export KNOWLEDGE_BASE_PATH="$KB_PATH"
 }
 
+seed_knowledge_base() {
+    if [ "$SEED_KB" = "0" ]; then
+        log_warn "Skipping example knowledge base seeding (SEED_KB=0)"
+        return
+    fi
+
+    local repo_root
+    repo_root="$(dirname "$SCRIPT_DIR")"
+
+    if [ ! -d "$repo_root/knowledge-base" ] && [ ! -d "$repo_root/lessons" ]; then
+        return
+    fi
+
+    if [ "$SEED_KB" != "1" ]; then
+        log_info "The repo ships example knowledge (Clean Code rules, Java sample)."
+        read -p "Copy and index it into your knowledge base now? [y/N] " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            log_info "Skipped. Re-run with SEED_KB=1 to seed it later without prompting."
+            return
+        fi
+    fi
+
+    log_step "Seeding example knowledge base..."
+
+    local seeded=0
+    for src_dir_doc_type in "knowledge-base:rules" "lessons:lessons"; do
+        local src_dir="${src_dir_doc_type%%:*}"
+        local doc_type="${src_dir_doc_type##*:}"
+
+        [ -d "$repo_root/$src_dir" ] || continue
+
+        for sub in global projects; do
+            local src_sub="$repo_root/$src_dir/$sub"
+            [ -d "$src_sub" ] || continue
+
+            for f in "$src_sub"/*.md; do
+                [ -e "$f" ] || continue
+
+                local basename_noext
+                basename_noext="$(basename "$f" .md)"
+                local dest="$KB_PATH/$src_dir/$sub/$(basename "$f")"
+                cp "$f" "$dest"
+
+                # Mirrors _scope_to_file_path's own convention: general.md
+                # is the "global" scope itself; other global/*.md files map
+                # to global-{name}; projects/*.md map to project-{name}.
+                # Blocks with their own explicit **Scope:** field (like the
+                # bundled Clean Code rules) override this at index time
+                # anyway — this is only the fallback.
+                local scope
+                if [ "$sub" = "projects" ]; then
+                    scope="project-$basename_noext"
+                elif [ "$basename_noext" = "general" ]; then
+                    scope="global"
+                else
+                    scope="global-$basename_noext"
+                fi
+
+                if "$BIN_DIR/meridian" index "$doc_type" "$dest" --scope "$scope" >/dev/null 2>&1; then
+                    log_info "Indexed $(basename "$f") -> scope $scope"
+                    seeded=$((seeded + 1))
+                else
+                    log_warn "Could not index $(basename "$f") (scope '$scope' may not exist yet — safe to ignore for files outside the bundled examples)"
+                fi
+            done
+        done
+    done
+
+    if [ "$seeded" -gt 0 ]; then
+        log_info "Seeded $seeded example file(s) into the knowledge base."
+    else
+        log_info "No example knowledge base files found to seed."
+    fi
+}
+
 setup_claude_code() {
     log_info "Setting up Claude Code..."
-
-    local config_exists=false
-    local mcp_entry=""
-
-    if [ -f "$HOME/.claude.json" ]; then
-        config_exists=true
-    fi
 
     # Check if already configured
     if claude mcp list 2>/dev/null | grep -q '"meridian"'; then
@@ -205,17 +316,18 @@ setup_claude_code() {
         return
     fi
 
-    # Add to Claude Code
+    # Add to Claude Code — uses the native `meridian` entry point, not
+    # `python -m meridian`, so MCP clients don't depend on how the
+    # interpreter resolves the editable install (see reporte-instalacion.md).
     if claude mcp add -s user \
         -e KNOWLEDGE_BASE_PATH="$KNOWLEDGE_BASE_PATH" \
         -e MERIDIAN_ACCESS_LEVEL=write \
         -- meridian \
-        "$BIN_DIR/python" \
-        -m meridian mcp 2>/dev/null; then
+        "$BIN_DIR/meridian" mcp 2>/dev/null; then
         log_info "Added to Claude Code"
     else
         log_warn "Could not add to Claude Code. Add manually:"
-        mcp_entry="  claude mcp add -s user -e KNOWLEDGE_BASE_PATH=\"$KNOWLEDGE_BASE_PATH\" -e MERIDIAN_ACCESS_LEVEL=write -- meridian \"$BIN_DIR/python\" -m meridian mcp"
+        echo "  claude mcp add -s user -e KNOWLEDGE_BASE_PATH=\"$KNOWLEDGE_BASE_PATH\" -e MERIDIAN_ACCESS_LEVEL=write -- meridian \"$BIN_DIR/meridian\" mcp"
     fi
 }
 
@@ -239,8 +351,8 @@ setup_kimi_cli() {
 {
   "mcpServers": {
     "meridian": {
-      "command": "$BIN_DIR/python",
-      "args": ["-m", "meridian", "mcp"],
+      "command": "$BIN_DIR/meridian",
+      "args": ["mcp"],
       "env": {
         "KNOWLEDGE_BASE_PATH": "$KNOWLEDGE_BASE_PATH",
         "MERIDIAN_ACCESS_LEVEL": "write"
@@ -274,7 +386,7 @@ setup_opencode() {
   "mcp": {
     "meridian": {
       "type": "local",
-      "command": ["REPLACE_BIN_PATH", "-m", "meridian", "mcp"],
+      "command": ["REPLACE_BIN_PATH", "mcp"],
       "env": {
         "KNOWLEDGE_BASE_PATH": "REPLACE_KB_PATH",
         "MERIDIAN_ACCESS_LEVEL": "write"
@@ -291,7 +403,7 @@ EOF
 )
 
     # Replace placeholders
-    meridian_config="${meridian_config//REPLACE_BIN_PATH/$BIN_DIR/python}"
+    meridian_config="${meridian_config//REPLACE_BIN_PATH/$BIN_DIR/meridian}"
     meridian_config="${meridian_config//REPLACE_KB_PATH/$KNOWLEDGE_BASE_PATH}"
 
     if [ -f "$oc_config" ]; then
@@ -321,7 +433,7 @@ setup_vscode() {
     "meridian": {
       "type": "stdio",
       "command": "REPLACE_BIN_PATH",
-      "args": ["-m", "meridian", "mcp"],
+      "args": ["mcp"],
       "env": {
         "KNOWLEDGE_BASE_PATH": "REPLACE_KB_PATH",
         "MERIDIAN_ACCESS_LEVEL": "write"
@@ -333,7 +445,7 @@ EOF
 )
 
     # Replace placeholders
-    meridian_config="${meridian_config//REPLACE_BIN_PATH/$BIN_DIR/python}"
+    meridian_config="${meridian_config//REPLACE_BIN_PATH/$BIN_DIR/meridian}"
     meridian_config="${meridian_config//REPLACE_KB_PATH/$KNOWLEDGE_BASE_PATH}"
 
     if [ -f "$vscode_config" ]; then
@@ -386,18 +498,18 @@ print_summary() {
     echo "MCP Clients:    ${CLIENTS_FOUND[*]:-none}"
     echo
     echo "To start Meridian:"
-    echo "  $BIN_DIR/python -m meridian mcp"
+    echo "  $BIN_DIR/meridian mcp"
     echo
     echo "Manual configuration for other clients:"
     echo "  KNOWLEDGE_BASE_PATH=$KNOWLEDGE_BASE_PATH"
     echo "  MERIDIAN_ACCESS_LEVEL=write"
-    echo "  Command: $BIN_DIR/python -m meridian mcp"
+    echo "  Command: $BIN_DIR/meridian mcp"
     echo
 }
 
 print_usage() {
     cat <<EOF
-Meridian Installer v1.2.0
+Meridian Installer v2.0.0 (Linux / macOS)
 
 Usage:
   bash install.sh                      # Interactive installation
@@ -407,6 +519,8 @@ Options:
   INSTALL_DIR=/path     Custom installation directory (default: ~/.meridian)
   KNOWLEDGE_BASE_PATH=/path  Custom knowledge base path
   SKIP_MCP=1         Skip MCP client configuration
+  SEED_KB=1          Seed the example knowledge base without asking
+  SEED_KB=0          Skip seeding the example knowledge base without asking
   DRY_RUN=1          Show what would be done without executing
 
 Examples:
@@ -421,6 +535,8 @@ Examples:
 
   # Dry run (show what would happen)
   DRY_RUN=1 bash install.sh
+
+Windows users: run scripts/install.ps1 in PowerShell instead.
 
 EOF
 }
@@ -437,7 +553,7 @@ main() {
     done
 
     echo "════════════════════════════════════════════════"
-    echo -e "  ${GREEN}Meridian Installer v1.2.0${NC}"
+    echo -e "  ${GREEN}Meridian Installer v2.0.0${NC}"
     echo "════════════════════════════════════════════════"
     echo
 
@@ -445,6 +561,7 @@ main() {
     echo "  Install directory:  $INSTALL_DIR"
     echo "  Knowledge base:    ${KNOWLEDGE_BASE_PATH:-auto}"
     echo "  Skip MCP setup:     ${SKIP_MCP:-no}"
+    echo "  Seed example KB:    ${SEED_KB:-ask}"
     echo "  Dry run:          ${DRY_RUN:-no}"
     echo
 
@@ -465,7 +582,9 @@ main() {
     create_install_dir
     setup_venv
     install_meridian
+    verify_install
     create_knowledge_base
+    seed_knowledge_base
 
     if [ "$SKIP_MCP" != "1" ]; then
         setup_mcp_clients

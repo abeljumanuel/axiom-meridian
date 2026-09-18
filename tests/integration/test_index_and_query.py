@@ -254,7 +254,12 @@ def test_query_rules_full(tmp_kb):
 
     assert len(data) == 3
     assert "text" in data[0]
-    assert "Regla:" in data[0]["text"]
+    # Since ADR-005 (indexed read path), detail="full" serves the parsed
+    # rule text from SQLite (rules.text), not the raw .md block — so no
+    # "**Regla:**" field label leaks into it, only the actual rule content.
+    assert data[0]["text"]
+    assert "Regla:" not in data[0]["text"]
+    assert "error" not in data[0]
 
 
 def test_query_rules_filter_severity(tmp_kb):
@@ -411,3 +416,42 @@ def test_get_rule_timeline(tmp_kb):
     assert len(timeline["history_events"]) == 2
     assert timeline["history_events"][0]["change_type"] == "CREATED"
     assert timeline["history_events"][1]["change_type"] == "UPDATED"
+
+
+def test_query_rules_tags_filter_is_exact_not_substring(tmp_kb):
+    """T06 acceptance: since ADR-005, tags filtering uses rule_tags with
+    exact equality (via EXISTS), not the old LIKE '%tag%' substring match —
+    a rule tagged only "golang" must not match tags="go"."""
+    kb_path, conn = tmp_kb
+    dest_file = kb_path / "knowledge-base" / "global" / "go.md"
+    dest_file.write_text("")
+
+    for code_hint, tag in (("go-rule", "go"), ("golang-rule", "golang")):
+        prop_id = f"prop-{code_hint}"
+        conn.execute(
+            """
+            INSERT INTO pending_proposals
+            (id, type, scope_id, proposed_text, metadata, source_type)
+            VALUES (?, 'rule', 'global-go', ?, ?, 'manual')
+            """,
+            (
+                prop_id,
+                f"Rule tagged {tag}.",
+                json.dumps({"tags": [tag]}),
+            ),
+        )
+        conn.commit()
+        approve_proposal(prop_id)
+
+    result = query_rules("global-go", tags="go", detail="summary")
+    data = json.loads(result)
+
+    codes = {r["code"] for r in data}
+    assert len(data) == 1
+    assert "golang" not in json.dumps(data)  # sanity: didn't just get lucky
+    matched_tags = conn.execute(
+        "SELECT tag FROM rule_tags WHERE rule_id IN "
+        f"({','.join('?' for _ in codes)})",
+        list(codes),
+    ).fetchall()
+    assert {t[0] for t in matched_tags} == {"go"}

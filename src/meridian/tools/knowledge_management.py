@@ -22,6 +22,7 @@ from meridian.utils.id_generator import (
     next_sequential_id,
 )
 from meridian.utils.privacy import strip_private_tags
+from meridian.utils.read_index import refresh_indexed_file, sync_tags, write_block
 
 logger = logging.getLogger(__name__)
 
@@ -118,9 +119,13 @@ def _build_lesson_atomic_block(
     return "\n".join(lines)
 
 
-def _append_atomic_block(dest_path: Path, block_text: str) -> tuple[int, int]:
+def _append_atomic_block(
+    conn: sqlite3.Connection, dest_path: Path, block_text: str
+) -> tuple[int, int]:
     """Append *block_text* to *dest_path* with ``\\n\\n`` separator.
 
+    Writes through :func:`write_block` (the only place a knowledge .md file
+    is written) so ``indexed_files`` never drifts from what's on disk.
     Returns ``(file_offset, byte_length)`` of the newly written block.
     """
     current_bytes = dest_path.read_bytes()
@@ -132,9 +137,7 @@ def _append_atomic_block(dest_path: Path, block_text: str) -> tuple[int, int]:
         separator = b""
 
     file_offset = len(current_bytes) + len(separator)
-
-    with dest_path.open("ab") as f:
-        f.write(separator + block_bytes)
+    write_block(conn, dest_path, current_bytes + separator + block_bytes)
 
     byte_length = len(block_bytes)
     return file_offset, byte_length
@@ -219,6 +222,7 @@ def _insert_indexed_rule(conn: sqlite3.Connection, block, scope_id: str, clean_t
         """,
         (hist_id, rule_id, "CREATED", clean_text),
     )
+    sync_tags(conn, "rule_tags", "rule_id", rule_id, block.tags)
 
 
 def _update_indexed_rule(
@@ -260,6 +264,7 @@ def _update_indexed_rule(
         """,
         (hist_id, existing_id, "UPDATED", existing_text, clean_text),
     )
+    sync_tags(conn, "rule_tags", "rule_id", existing_id, block.tags)
 
 
 def _index_rules_atomic(
@@ -299,6 +304,9 @@ def _index_rules_atomic(
             result["updated"] += 1
 
         _record_indexed(result, scope_id)
+
+    if blocks:
+        refresh_indexed_file(conn, Path(filepath))
 
 
 def _index_rules_legacy(
@@ -407,6 +415,7 @@ def _insert_indexed_lesson(
         """,
         (hist_id, lesson_id, "CREATED"),
     )
+    sync_tags(conn, "lesson_tags", "lesson_id", lesson_id, block.tags)
 
 
 def _update_indexed_lesson(
@@ -454,6 +463,7 @@ def _update_indexed_lesson(
         """,
         (hist_id, existing_id, "DEPRECATED", "Updated via re-index"),
     )
+    sync_tags(conn, "lesson_tags", "lesson_id", existing_id, block.tags)
 
 
 def _index_lessons_atomic(
@@ -500,6 +510,9 @@ def _index_lessons_atomic(
             result["updated"] += 1
 
         _record_indexed(result, scope_id)
+
+    if blocks:
+        refresh_indexed_file(conn, Path(filepath))
 
 
 def _index_lessons_legacy(
@@ -635,18 +648,24 @@ def _resolve_update_target(
 
 
 def _splice_atomic_block(
-    dest_path: Path, old_offset: int, old_length: int, new_block_text: str
+    conn: sqlite3.Connection,
+    dest_path: Path,
+    old_offset: int,
+    old_length: int,
+    new_block_text: str,
 ) -> tuple[str, int]:
     """Replace the byte range [old_offset, old_offset+old_length) in dest_path
     with new_block_text, preserving everything else in the file untouched.
 
-    Returns the replaced block's original text and the new block's byte length.
+    Writes through :func:`write_block` so ``indexed_files`` never drifts from
+    what's on disk. Returns the replaced block's original text and the new
+    block's byte length.
     """
     raw_bytes = dest_path.read_bytes()
     old_block_text = raw_bytes[old_offset : old_offset + old_length].decode("utf-8")
     new_block_bytes = new_block_text.encode("utf-8")
     new_bytes = raw_bytes[:old_offset] + new_block_bytes + raw_bytes[old_offset + old_length :]
-    dest_path.write_bytes(new_bytes)
+    write_block(conn, dest_path, new_bytes)
     return old_block_text, len(new_block_bytes)
 
 
@@ -746,18 +765,29 @@ def _approve_update_proposal(
         raise FileNotFoundError(f"Destination file does not exist: {dest_path}")
 
     block_text = block_builder(target_id, scope_id, proposed_text, metadata)
-    old_block_text, new_length = _splice_atomic_block(
-        dest_path, old_offset, old_length, block_text
-    )
 
+    # File write happens inside the transaction (via write_block) so
+    # indexed_files stays in the same commit as the row/history update.
     conn.execute("BEGIN TRANSACTION")
     try:
+        old_block_text, new_length = _splice_atomic_block(
+            conn, dest_path, old_offset, old_length, block_text
+        )
+
         if target_table == "rules":
             _update_rule_row(conn, target_id, target, proposed_text, metadata, old_offset, new_length)
         else:
             _update_lesson_row(
                 conn, target_id, target, scope_id, proposed_text, metadata, old_offset, new_length
             )
+
+        sync_tags(
+            conn,
+            "rule_tags" if target_table == "rules" else "lesson_tags",
+            id_field,
+            target_id,
+            metadata.get("tags", []),
+        )
 
         hist_id = next_sequential_id(conn, hist_table, "rh" if target_table == "rules" else "lh")
         conn.execute(
@@ -844,6 +874,8 @@ def _insert_new_rule(
             (code, attr["key"], attr["value"]),
         )
 
+    sync_tags(conn, "rule_tags", "rule_id", code, metadata.get("tags"))
+
 
 def _insert_new_lesson(
     conn: sqlite3.Connection,
@@ -895,6 +927,8 @@ def _insert_new_lesson(
         (hist_id, code, "CREATED"),
     )
 
+    sync_tags(conn, "lesson_tags", "lesson_id", code, metadata.get("tags"))
+
 
 def _approve_create_proposal(
     conn: sqlite3.Connection,
@@ -926,7 +960,7 @@ def _approve_create_proposal(
     if not dest_path.exists():
         raise FileNotFoundError(f"Destination file does not exist: {dest_path}")
 
-    file_offset, byte_length = _append_atomic_block(dest_path, block_text)
+    file_offset, byte_length = _append_atomic_block(conn, dest_path, block_text)
 
     if prop_type == "rule":
         _insert_new_rule(
@@ -1064,6 +1098,33 @@ def list_pending_proposals(
 # Migration & promotion
 # ---------------------------------------------------------------------------
 
+# Ordered keyword -> scope map for legacy-file scope inference. Order matters:
+# more specific compound keywords (e.g. "go-fiber") must be checked before
+# their generic substring (e.g. "go") so the specific scope wins.
+_SCOPE_KEYWORD_PATTERNS: list[tuple[str, str]] = [
+    (r"\bquarkus\b", "global-quarkus"),
+    (r"\bjava\b", "global-java"),
+    (r"\bnestjs\b", "global-nestjs"),
+    (r"\bspring-boot\b", "global-spring-boot"),
+    (r"\bgo-fiber\b", "global-go-fiber"),
+    (r"\bgo-gin\b", "global-go-gin"),
+    (r"\bgo\b", "global-go"),
+    (r"\bflutter\b", "global-flutter"),
+]
+
+
+def _infer_scope_from_text(raw_lower: str, default_scope_id: str) -> tuple[str, bool]:
+    """Infer a scope from legacy rule/lesson text using word-boundary matching.
+
+    Returns (inferred_scope, scope_suggested). Word boundaries (\\b) prevent
+    substring false positives such as "codigo"/"cargo" matching "go", or
+    "javascript" matching "java" (see reporte-indexacion.md).
+    """
+    for pattern, scope in _SCOPE_KEYWORD_PATTERNS:
+        if re.search(pattern, raw_lower):
+            return scope, False
+    return default_scope_id, True
+
 
 def convert_to_atomic_format(
     filepath: str, default_scope_id: str, doc_type: str
@@ -1078,29 +1139,11 @@ def convert_to_atomic_format(
         proposals: list[dict] = []
 
         for block in legacy_blocks:
-            # Scope inference (basic keyword matching)
-            inferred_scope = default_scope_id
-            scope_suggested = False
+            # Scope inference (word-boundary keyword matching)
             raw_lower = block.raw_text.lower()
-
-            if "quarkus" in raw_lower:
-                inferred_scope = "global-quarkus"
-            elif "java" in raw_lower:
-                inferred_scope = "global-java"
-            elif "nestjs" in raw_lower:
-                inferred_scope = "global-nestjs"
-            elif "spring-boot" in raw_lower:
-                inferred_scope = "global-spring-boot"
-            elif "go-fiber" in raw_lower:
-                inferred_scope = "global-go-fiber"
-            elif "go-gin" in raw_lower:
-                inferred_scope = "global-go-gin"
-            elif "go" in raw_lower:
-                inferred_scope = "global-go"
-            elif "flutter" in raw_lower:
-                inferred_scope = "global-flutter"
-            else:
-                scope_suggested = True
+            inferred_scope, scope_suggested = _infer_scope_from_text(
+                raw_lower, default_scope_id
+            )
 
             proposed_text = strip_private_tags(block.raw_text)
 
@@ -1199,7 +1242,7 @@ def promote_rule(rule_id: str, new_scope_id: str) -> dict:
         file_offset = rule.get("file_offset")
         byte_length = rule.get("byte_length")
         if file_path and file_offset is not None and byte_length is not None:
-            _mark_deprecated_in_md(file_path, file_offset, byte_length)
+            _mark_deprecated_in_md(conn, file_path, file_offset, byte_length)
 
         hist_id = next_sequential_id(conn, "rule_history", "rh")
         conn.execute(
@@ -1359,7 +1402,9 @@ def generate_embeddings(
     }
 
 
-def _mark_deprecated_in_md(file_path: str, file_offset: int, byte_length: int) -> None:
+def _mark_deprecated_in_md(
+    conn: sqlite3.Connection, file_path: str, file_offset: int, byte_length: int
+) -> None:
     """Best-effort deprecation marker in the source .md file."""
     path = Path(file_path)
     if not path.exists():
@@ -1380,7 +1425,7 @@ def _mark_deprecated_in_md(file_path: str, file_offset: int, byte_length: int) -
             + new_block_bytes
             + raw_bytes[file_offset + byte_length :]
         )
-        path.write_bytes(new_raw)
+        write_block(conn, path, new_raw)
 
 
 # ---------------------------------------------------------------------------

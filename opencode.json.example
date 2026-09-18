@@ -3,9 +3,8 @@
   "mcp": {
     "meridian": {
       "type": "local",
-      "command": ["/home/developer/Documents/workspace/axiom-meridian/.venv/bin/python", "-m", "meridian", "mcp"],
-      "env": {
-        "KNOWLEDGE_BASE_PATH": "/home/developer/meridian-kb",
+      "command": ["/path/to/meridian/.venv/bin/meridian", "mcp"],
+      "environment": {
         "MERIDIAN_ACCESS_LEVEL": "write"
       }
     }

@@ -28,6 +28,10 @@ Thumbs.db
 *.db-wal
 *.db-shm
 
+# Migration runner backups (db/migrations.py creates <db>.bak-<timestamp>,
+# which doesn't match *.db above since it doesn't end in .db)
+*.bak-*
+
 # ChromaDB (colocated with KB, outside repo)
 chroma/
 
@@ -40,3 +44,10 @@ meridian-kb/
 # Coverage
 htmlcov/
 .coverage
+
+# Local environment / secrets
+.env
+.env.*
+
+# Logs
+*.log

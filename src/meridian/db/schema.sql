@@ -212,15 +212,22 @@ INSERT INTO scopes VALUES ('global',              'global', 'Global',           
 INSERT INTO scopes VALUES ('global-java',         'global', 'Global Java',         'global');
 INSERT INTO scopes VALUES ('global-quarkus',      'global', 'Global Quarkus',      'global-java');
 INSERT INTO scopes VALUES ('global-spring-boot',  'global', 'Global Spring Boot',  'global-java');
-INSERT INTO scopes VALUES ('global-nestjs',       'global', 'Global NestJS',       'global');
+INSERT INTO scopes VALUES ('global-nodejs',       'global', 'Global Node.js',      'global');
+INSERT INTO scopes VALUES ('global-express',      'global', 'Global Express',      'global-nodejs');
+INSERT INTO scopes VALUES ('global-adonisjs',     'global', 'Global AdonisJS',     'global-nodejs');
+INSERT INTO scopes VALUES ('global-nestjs',       'global', 'Global NestJS',       'global-nodejs');
+INSERT INTO scopes VALUES ('global-react',        'global', 'Global React',        'global');
 INSERT INTO scopes VALUES ('global-go',           'global', 'Global Go',           'global');
 INSERT INTO scopes VALUES ('global-go-fiber',     'global', 'Global Go Fiber',     'global-go');
 INSERT INTO scopes VALUES ('global-go-gin',       'global', 'Global Go Gin',       'global-go');
 INSERT INTO scopes VALUES ('global-flutter',      'global', 'Global Flutter',      'global');
+INSERT INTO scopes VALUES ('global-python',       'global', 'Global Python',       'global');
+INSERT INTO scopes VALUES ('global-fastmcp',      'global', 'Global FastMCP',      'global-python');
 
 INSERT INTO scopes VALUES ('project-project-example', 'project', 'Project Example',  'global-quarkus');
 INSERT INTO scopes VALUES ('project-other-project-example',     'project', 'other-project-example',      'global-nestjs');
 INSERT INTO scopes VALUES ('project-ledger',         'project', 'Ledger',          'global-flutter');
+INSERT INTO scopes VALUES ('project-axiom-meridian', 'project', 'Axiom Meridian',  'global-fastmcp');
 
 -- Atributos de proyecto
 INSERT INTO scope_attributes VALUES ('project-project-example', 'framework',      'quarkus');
@@ -230,13 +237,22 @@ INSERT INTO scope_attributes VALUES ('project-other-project-example',     'frame
 INSERT INTO scope_attributes VALUES ('project-other-project-example',     'component_role', 'last-mile');
 INSERT INTO scope_attributes VALUES ('project-ledger',         'framework',      'flutter');
 INSERT INTO scope_attributes VALUES ('project-ledger',         'component_role', 'mobile-client');
+INSERT INTO scope_attributes VALUES ('project-axiom-meridian', 'framework',      'fastmcp');
+INSERT INTO scope_attributes VALUES ('project-axiom-meridian', 'component_role', 'mcp-server');
+INSERT INTO scope_attributes VALUES ('project-axiom-meridian', 'runtime_version','python-3.11');
 
 -- Atributos de scope global
 INSERT INTO scope_attributes VALUES ('global-java',        'framework', 'java');
 INSERT INTO scope_attributes VALUES ('global-quarkus',     'framework', 'quarkus');
 INSERT INTO scope_attributes VALUES ('global-spring-boot', 'framework', 'spring-boot');
+INSERT INTO scope_attributes VALUES ('global-nodejs',      'framework', 'nodejs');
+INSERT INTO scope_attributes VALUES ('global-express',     'framework', 'express');
+INSERT INTO scope_attributes VALUES ('global-adonisjs',    'framework', 'adonisjs');
 INSERT INTO scope_attributes VALUES ('global-nestjs',      'framework', 'nestjs');
+INSERT INTO scope_attributes VALUES ('global-react',       'framework', 'react');
 INSERT INTO scope_attributes VALUES ('global-go',          'framework', 'go');
 INSERT INTO scope_attributes VALUES ('global-go-fiber',    'framework', 'go-fiber');
 INSERT INTO scope_attributes VALUES ('global-go-gin',      'framework', 'go-gin');
 INSERT INTO scope_attributes VALUES ('global-flutter',     'framework', 'flutter');
+INSERT INTO scope_attributes VALUES ('global-python',      'framework', 'python');
+INSERT INTO scope_attributes VALUES ('global-fastmcp',     'framework', 'fastmcp');

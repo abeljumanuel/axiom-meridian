@@ -54,7 +54,21 @@ def test_legacy_database_gets_migration_001_applied():
         # database) but empty, and `lessons` lacks
         # source_type/source_ref/created_at/updated_at.
         legacy_conn = sqlite3.connect(str(db_path))
-        legacy_conn.execute("CREATE TABLE scopes (id TEXT PRIMARY KEY)")
+        legacy_conn.execute(
+            "CREATE TABLE scopes (id TEXT PRIMARY KEY, type TEXT, name TEXT, "
+            "parent_id TEXT)"
+        )
+        legacy_conn.execute(
+            "INSERT INTO scopes VALUES ('global', 'global', 'Global', NULL)"
+        )
+        legacy_conn.execute(
+            "INSERT INTO scopes VALUES "
+            "('global-nestjs', 'global', 'Global NestJS', 'global')"
+        )
+        legacy_conn.execute(
+            "CREATE TABLE scope_attributes (scope_id TEXT, key TEXT, value TEXT, "
+            "PRIMARY KEY (scope_id, key))"
+        )
         legacy_conn.execute(
             "CREATE TABLE lessons (id TEXT PRIMARY KEY, scope_id TEXT, code TEXT, "
             "tags TEXT, file_path TEXT)"
@@ -97,6 +111,104 @@ def test_legacy_database_gets_migration_001_applied():
             conn.close()
 
 
+def test_legacy_database_gets_nodejs_python_scopes_applied():
+    """Migration 004: new Node.js/Python scopes get backfilled onto an
+    existing database, and pre-existing global-nestjs gets re-parented
+    under the new global-nodejs umbrella."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        kb_path = Path(tmpdir)
+        _kb_dirs(kb_path)
+        db_path = kb_path / "legacy.db"
+
+        legacy_conn = sqlite3.connect(str(db_path))
+        legacy_conn.execute(
+            "CREATE TABLE scopes (id TEXT PRIMARY KEY, type TEXT, name TEXT, "
+            "parent_id TEXT)"
+        )
+        legacy_conn.execute(
+            "INSERT INTO scopes VALUES ('global', 'global', 'Global', NULL)"
+        )
+        legacy_conn.execute(
+            "INSERT INTO scopes VALUES "
+            "('global-nestjs', 'global', 'Global NestJS', 'global')"
+        )
+        legacy_conn.execute(
+            "CREATE TABLE scope_attributes (scope_id TEXT, key TEXT, value TEXT, "
+            "PRIMARY KEY (scope_id, key))"
+        )
+        legacy_conn.execute(
+            "INSERT INTO scope_attributes VALUES "
+            "('global-nestjs', 'framework', 'nestjs')"
+        )
+        legacy_conn.execute(
+            "CREATE TABLE lessons (id TEXT PRIMARY KEY, scope_id TEXT, code TEXT, "
+            "tags TEXT, file_path TEXT)"
+        )
+        legacy_conn.execute(
+            "CREATE TABLE rules (id TEXT PRIMARY KEY, code TEXT, tags TEXT, "
+            "file_path TEXT)"
+        )
+        legacy_conn.execute("CREATE TABLE access_log (id TEXT PRIMARY KEY)")
+        legacy_conn.execute(
+            "CREATE TABLE pending_proposals (id TEXT PRIMARY KEY, scope_id TEXT)"
+        )
+        legacy_conn.execute(
+            "CREATE TABLE rule_history (id TEXT PRIMARY KEY, rule_id TEXT)"
+        )
+        legacy_conn.execute(
+            "CREATE TABLE lesson_history (id TEXT PRIMARY KEY, lesson_id TEXT)"
+        )
+        legacy_conn.execute(
+            "CREATE TABLE pr_audits (id TEXT PRIMARY KEY, pr_ref TEXT, project_id TEXT)"
+        )
+        legacy_conn.execute("CREATE TABLE planning_checks (id TEXT PRIMARY KEY)")
+        legacy_conn.commit()
+        legacy_conn.close()
+
+        initialize_db(db_path)
+
+        conn = get_connection(db_path)
+        try:
+            new_scope_ids = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT id FROM scopes WHERE id IN "
+                    "('global-nodejs', 'global-express', 'global-adonisjs', "
+                    "'global-react', 'global-python', 'global-fastmcp', "
+                    "'project-axiom-meridian')"
+                )
+            }
+            assert new_scope_ids == {
+                "global-nodejs",
+                "global-express",
+                "global-adonisjs",
+                "global-react",
+                "global-python",
+                "global-fastmcp",
+                "project-axiom-meridian",
+            }
+
+            nestjs_parent = conn.execute(
+                "SELECT parent_id FROM scopes WHERE id = 'global-nestjs'"
+            ).fetchone()[0]
+            assert nestjs_parent == "global-nodejs"
+
+            axiom_attrs = {
+                row[0]: row[1]
+                for row in conn.execute(
+                    "SELECT key, value FROM scope_attributes "
+                    "WHERE scope_id = 'project-axiom-meridian'"
+                )
+            }
+            assert axiom_attrs == {
+                "framework": "fastmcp",
+                "component_role": "mcp-server",
+                "runtime_version": "python-3.11",
+            }
+        finally:
+            conn.close()
+
+
 def test_legacy_database_with_existing_lessons_rows_migrates_without_error():
     """Regression test: SQLite rejects ALTER TABLE ADD COLUMN with a
     non-constant default (e.g. DEFAULT (datetime('now'))) once the table
@@ -109,7 +221,21 @@ def test_legacy_database_with_existing_lessons_rows_migrates_without_error():
         db_path = kb_path / "legacy_populated.db"
 
         legacy_conn = sqlite3.connect(str(db_path))
-        legacy_conn.execute("CREATE TABLE scopes (id TEXT PRIMARY KEY)")
+        legacy_conn.execute(
+            "CREATE TABLE scopes (id TEXT PRIMARY KEY, type TEXT, name TEXT, "
+            "parent_id TEXT)"
+        )
+        legacy_conn.execute(
+            "INSERT INTO scopes VALUES ('global', 'global', 'Global', NULL)"
+        )
+        legacy_conn.execute(
+            "INSERT INTO scopes VALUES "
+            "('global-nestjs', 'global', 'Global NestJS', 'global')"
+        )
+        legacy_conn.execute(
+            "CREATE TABLE scope_attributes (scope_id TEXT, key TEXT, value TEXT, "
+            "PRIMARY KEY (scope_id, key))"
+        )
         legacy_conn.execute(
             "CREATE TABLE lessons (id TEXT PRIMARY KEY, scope_id TEXT, code TEXT, "
             "what_happened TEXT, tags TEXT, file_path TEXT)"

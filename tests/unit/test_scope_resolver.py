@@ -44,7 +44,53 @@ def test_resolve_project_example(tmp_path: Path) -> None:
 def test_resolve_other_project_example(tmp_path: Path) -> None:
     conn = _make_conn(tmp_path)
     result = resolve_scope_hierarchy(conn, "project-other-project-example")
-    assert result == ["project-other-project-example", "global-nestjs", "global"]
+    # global-nestjs now hangs off global-nodejs (migration 004), not global
+    # directly, for consistency with global-java/global-go's structure.
+    assert result == [
+        "project-other-project-example",
+        "global-nestjs",
+        "global-nodejs",
+        "global",
+    ]
+
+
+def test_resolve_express(tmp_path: Path) -> None:
+    conn = _make_conn(tmp_path)
+    result = resolve_scope_hierarchy(conn, "global-express")
+    assert result == ["global-express", "global-nodejs", "global"]
+
+
+def test_resolve_adonisjs(tmp_path: Path) -> None:
+    conn = _make_conn(tmp_path)
+    result = resolve_scope_hierarchy(conn, "global-adonisjs")
+    assert result == ["global-adonisjs", "global-nodejs", "global"]
+
+
+def test_resolve_react(tmp_path: Path) -> None:
+    conn = _make_conn(tmp_path)
+    result = resolve_scope_hierarchy(conn, "global-react")
+    assert result == ["global-react", "global"]
+
+
+def test_resolve_axiom_meridian_project(tmp_path: Path) -> None:
+    conn = _make_conn(tmp_path)
+    result = resolve_scope_hierarchy(conn, "project-axiom-meridian")
+    assert result == [
+        "project-axiom-meridian",
+        "global-fastmcp",
+        "global-python",
+        "global",
+    ]
+
+
+def test_load_attributes_axiom_meridian(tmp_path: Path) -> None:
+    conn = _make_conn(tmp_path)
+    result = load_scope_attributes(conn, "project-axiom-meridian")
+    assert result == {
+        "framework": "fastmcp",
+        "component_role": "mcp-server",
+        "runtime_version": "python-3.11",
+    }
 
 
 def test_resolve_nonexistent(tmp_path: Path) -> None:

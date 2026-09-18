@@ -57,7 +57,7 @@ def test_initialize_inserts_scopes():
         try:
             cursor = conn.execute("SELECT COUNT(*) FROM scopes")
             count = cursor.fetchone()[0]
-            assert count == 12
+            assert count == 19
         finally:
             conn.close()
 
@@ -75,7 +75,7 @@ def test_initialize_inserts_scope_attributes():
         try:
             cursor = conn.execute("SELECT COUNT(*) FROM scope_attributes")
             count = cursor.fetchone()[0]
-            assert count == 15
+            assert count == 24
         finally:
             conn.close()
 
@@ -96,8 +96,8 @@ def test_initialize_is_idempotent():
             scopes_count = cursor.fetchone()[0]
             cursor = conn.execute("SELECT COUNT(*) FROM scope_attributes")
             attrs_count = cursor.fetchone()[0]
-            assert scopes_count == 12
-            assert attrs_count == 15
+            assert scopes_count == 19
+            assert attrs_count == 24
         finally:
             conn.close()
 

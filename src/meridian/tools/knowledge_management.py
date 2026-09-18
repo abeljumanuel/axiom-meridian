@@ -22,6 +22,7 @@ from meridian.utils.id_generator import (
     next_sequential_id,
 )
 from meridian.utils.privacy import strip_private_tags
+from meridian.utils.read_index import refresh_indexed_file, sync_tags, write_block
 
 logger = logging.getLogger(__name__)
 
@@ -118,9 +119,13 @@ def _build_lesson_atomic_block(
     return "\n".join(lines)
 
 
-def _append_atomic_block(dest_path: Path, block_text: str) -> tuple[int, int]:
+def _append_atomic_block(
+    conn: sqlite3.Connection, dest_path: Path, block_text: str
+) -> tuple[int, int]:
     """Append *block_text* to *dest_path* with ``\\n\\n`` separator.
 
+    Writes through :func:`write_block` (the only place a knowledge .md file
+    is written) so ``indexed_files`` never drifts from what's on disk.
     Returns ``(file_offset, byte_length)`` of the newly written block.
     """
     current_bytes = dest_path.read_bytes()
@@ -132,9 +137,7 @@ def _append_atomic_block(dest_path: Path, block_text: str) -> tuple[int, int]:
         separator = b""
 
     file_offset = len(current_bytes) + len(separator)
-
-    with dest_path.open("ab") as f:
-        f.write(separator + block_bytes)
+    write_block(conn, dest_path, current_bytes + separator + block_bytes)
 
     byte_length = len(block_bytes)
     return file_offset, byte_length
@@ -252,6 +255,7 @@ def index_rules_from_markdown(
                             """,
                             (hist_id, rule_id, "CREATED", clean_text),
                         )
+                        sync_tags(conn, "rule_tags", "rule_id", rule_id, block.tags)
                         result["created"] += 1
                     else:
                         existing_id, existing_text = row
@@ -292,6 +296,9 @@ def index_rules_from_markdown(
                                     clean_text,
                                 ),
                             )
+                            sync_tags(
+                                conn, "rule_tags", "rule_id", existing_id, block.tags
+                            )
                             result["updated"] += 1
                         else:
                             # unchanged — skip
@@ -301,6 +308,9 @@ def index_rules_from_markdown(
                     result["by_scope"][scope_id] = (
                         result["by_scope"].get(scope_id, 0) + 1
                     )
+
+                if blocks:
+                    refresh_indexed_file(conn, Path(filepath))
 
             elif mode == "legacy":
                 legacy_blocks = legacy_parse(filepath, doc_type="rules")
@@ -415,8 +425,10 @@ def index_lessons_from_markdown(
                         INSERT INTO lessons
                         (id, scope_id, code, project, date_occurred, severity,
                          area_affected, what_happened, impact, root_cause,
-                         resolution, tags, file_path, file_offset, byte_length)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         resolution, tags, file_path, file_offset, byte_length,
+                         created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                datetime('now'), datetime('now'))
                         """,
                         (
                             lesson_id,
@@ -445,6 +457,7 @@ def index_lessons_from_markdown(
                         """,
                         (hist_id, lesson_id, "CREATED"),
                     )
+                    sync_tags(conn, "lesson_tags", "lesson_id", lesson_id, block.tags)
                     result["created"] += 1
                 else:
                     existing_id, existing_text = row
@@ -490,6 +503,9 @@ def index_lessons_from_markdown(
                                 "Updated via re-index",
                             ),
                         )
+                        sync_tags(
+                            conn, "lesson_tags", "lesson_id", existing_id, block.tags
+                        )
                         result["updated"] += 1
                     else:
                         continue
@@ -498,6 +514,9 @@ def index_lessons_from_markdown(
                 result["by_scope"][scope_id] = (
                     result["by_scope"].get(scope_id, 0) + 1
                 )
+
+            if blocks:
+                refresh_indexed_file(conn, path)
 
         elif mode == "legacy":
             legacy_blocks = legacy_parse(filepath, doc_type="lessons")
@@ -636,12 +655,14 @@ def approve_proposal(proposal_id: str) -> dict:
 
             # Atomic file replacement: byte-level slice
             new_bytes = raw_bytes[:old_offset] + new_block_bytes + raw_bytes[old_offset + old_length:]
-            dest_path.write_bytes(new_bytes)
 
-            # Start transaction for DB operations
+            # Start transaction for DB operations (file write included, so
+            # indexed_files stays in the same commit as the row/history update)
             conn.execute("BEGIN TRANSACTION")
 
             try:
+                write_block(conn, dest_path, new_bytes)
+
                 # Update target row based on type
                 if target_table == "rules":
                     conn.execute(
@@ -691,6 +712,14 @@ def approve_proposal(proposal_id: str) -> dict:
                             target_id,
                         ),
                     )
+
+                sync_tags(
+                    conn,
+                    "rule_tags" if target_table == "rules" else "lesson_tags",
+                    id_field,
+                    target_id,
+                    metadata.get("tags", []),
+                )
 
                 # Record history with change_type="UPDATED"
                 hist_id = next_sequential_id(conn, hist_table, "rh" if target_table == "rules" else "lh")
@@ -751,7 +780,7 @@ def approve_proposal(proposal_id: str) -> dict:
                 )
 
             # Append block
-            file_offset, byte_length = _append_atomic_block(dest_path, block_text)
+            file_offset, byte_length = _append_atomic_block(conn, dest_path, block_text)
 
             # Insert into rules / lessons
             if prop_type == "rule":
@@ -797,14 +826,18 @@ def approve_proposal(proposal_id: str) -> dict:
                         """,
                         (code, attr["key"], attr["value"]),
                     )
+
+                sync_tags(conn, "rule_tags", "rule_id", code, metadata.get("tags"))
             else:
                 conn.execute(
                     """
                     INSERT INTO lessons
                     (id, scope_id, code, project, date_occurred, severity,
                      area_affected, what_happened, impact, root_cause, resolution,
-                     tags, source_type, source_ref, file_path, file_offset, byte_length)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     tags, source_type, source_ref, file_path, file_offset, byte_length,
+                     created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                            datetime('now'), datetime('now'))
                     """,
                     (
                         code,
@@ -835,6 +868,8 @@ def approve_proposal(proposal_id: str) -> dict:
                     """,
                     (hist_id, code, "CREATED"),
                 )
+
+                sync_tags(conn, "lesson_tags", "lesson_id", code, metadata.get("tags"))
 
             # Update proposal status
             conn.execute(
@@ -965,6 +1000,33 @@ def list_pending_proposals(
 # Migration & promotion
 # ---------------------------------------------------------------------------
 
+# Ordered keyword -> scope map for legacy-file scope inference. Order matters:
+# more specific compound keywords (e.g. "go-fiber") must be checked before
+# their generic substring (e.g. "go") so the specific scope wins.
+_SCOPE_KEYWORD_PATTERNS: list[tuple[str, str]] = [
+    (r"\bquarkus\b", "global-quarkus"),
+    (r"\bjava\b", "global-java"),
+    (r"\bnestjs\b", "global-nestjs"),
+    (r"\bspring-boot\b", "global-spring-boot"),
+    (r"\bgo-fiber\b", "global-go-fiber"),
+    (r"\bgo-gin\b", "global-go-gin"),
+    (r"\bgo\b", "global-go"),
+    (r"\bflutter\b", "global-flutter"),
+]
+
+
+def _infer_scope_from_text(raw_lower: str, default_scope_id: str) -> tuple[str, bool]:
+    """Infer a scope from legacy rule/lesson text using word-boundary matching.
+
+    Returns (inferred_scope, scope_suggested). Word boundaries (\\b) prevent
+    substring false positives such as "codigo"/"cargo" matching "go", or
+    "javascript" matching "java" (see reporte-indexacion.md).
+    """
+    for pattern, scope in _SCOPE_KEYWORD_PATTERNS:
+        if re.search(pattern, raw_lower):
+            return scope, False
+    return default_scope_id, True
+
 
 def convert_to_atomic_format(
     filepath: str, default_scope_id: str, doc_type: str
@@ -979,29 +1041,11 @@ def convert_to_atomic_format(
         proposals: list[dict] = []
 
         for block in legacy_blocks:
-            # Scope inference (basic keyword matching)
-            inferred_scope = default_scope_id
-            scope_suggested = False
+            # Scope inference (word-boundary keyword matching)
             raw_lower = block.raw_text.lower()
-
-            if "quarkus" in raw_lower:
-                inferred_scope = "global-quarkus"
-            elif "java" in raw_lower:
-                inferred_scope = "global-java"
-            elif "nestjs" in raw_lower:
-                inferred_scope = "global-nestjs"
-            elif "spring-boot" in raw_lower:
-                inferred_scope = "global-spring-boot"
-            elif "go-fiber" in raw_lower:
-                inferred_scope = "global-go-fiber"
-            elif "go-gin" in raw_lower:
-                inferred_scope = "global-go-gin"
-            elif "go" in raw_lower:
-                inferred_scope = "global-go"
-            elif "flutter" in raw_lower:
-                inferred_scope = "global-flutter"
-            else:
-                scope_suggested = True
+            inferred_scope, scope_suggested = _infer_scope_from_text(
+                raw_lower, default_scope_id
+            )
 
             proposed_text = strip_private_tags(block.raw_text)
 
@@ -1102,7 +1146,7 @@ def promote_rule(rule_id: str, new_scope_id: str) -> dict:
         file_offset = rule.get("file_offset")
         byte_length = rule.get("byte_length")
         if file_path and file_offset is not None and byte_length is not None:
-            _mark_deprecated_in_md(file_path, file_offset, byte_length)
+            _mark_deprecated_in_md(conn, file_path, file_offset, byte_length)
 
         # Register PROMOTED in history
         hist_id = next_sequential_id(conn, "rule_history", "rh")
@@ -1267,7 +1311,9 @@ def generate_embeddings(
     }
 
 
-def _mark_deprecated_in_md(file_path: str, file_offset: int, byte_length: int) -> None:
+def _mark_deprecated_in_md(
+    conn: sqlite3.Connection, file_path: str, file_offset: int, byte_length: int
+) -> None:
     """Best-effort deprecation marker in the source .md file."""
     path = Path(file_path)
     if not path.exists():
@@ -1289,7 +1335,7 @@ def _mark_deprecated_in_md(file_path: str, file_offset: int, byte_length: int) -
             + new_block_bytes
             + raw_bytes[file_offset + byte_length :]
         )
-        path.write_bytes(new_raw)
+        write_block(conn, path, new_raw)
 
 
 # ---------------------------------------------------------------------------

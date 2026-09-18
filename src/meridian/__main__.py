@@ -24,7 +24,7 @@ def _check_python_environment() -> None:
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: python -m meridian [mcp|serve|version|db|migrate|proposals|query]")
+        print("Usage: python -m meridian [mcp|serve|version|db|migrate|index|proposals|query]")
         sys.exit(1)
 
     command = sys.argv[1]
@@ -65,6 +65,32 @@ def main() -> None:
         scope_id = sys.argv[5]
         from meridian.tools.knowledge_management import convert_to_atomic_format
         result = convert_to_atomic_format(filepath, scope_id, doc_type)
+        _print_json(result)
+
+    elif command == "index":
+        if len(sys.argv) < 5:
+            print("Usage: python -m meridian index <rules|lessons> <file> --scope <scope_id>")
+            sys.exit(1)
+        doc_type = sys.argv[2]
+        filepath = sys.argv[3]
+        if sys.argv[4] != "--scope" or len(sys.argv) < 6:
+            print("Usage: python -m meridian index <rules|lessons> <file> --scope <scope_id>")
+            sys.exit(1)
+        scope_id = sys.argv[5]
+
+        from meridian.config import get_db_path
+        from meridian.db.connection import initialize_db
+        initialize_db(get_db_path())
+
+        if doc_type == "rules":
+            from meridian.tools.knowledge_management import index_rules_from_markdown
+            result = index_rules_from_markdown(filepath, default_scope_id=scope_id, mode="atomic")
+        elif doc_type == "lessons":
+            from meridian.tools.knowledge_management import index_lessons_from_markdown
+            result = index_lessons_from_markdown(filepath, default_scope_id=scope_id, mode="atomic")
+        else:
+            print(f"Unknown index doc_type: {doc_type}. Use 'rules' or 'lessons'.")
+            sys.exit(1)
         _print_json(result)
 
     elif command == "proposals":
@@ -150,7 +176,7 @@ def main() -> None:
 
     else:
         print(f"Unknown command: {command}")
-        print("Usage: python -m meridian [mcp|serve|version|db|migrate|proposals|query]")
+        print("Usage: python -m meridian [mcp|serve|version|db|migrate|index|proposals|query]")
         sys.exit(1)
 
 

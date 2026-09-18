@@ -39,6 +39,8 @@ As knowledge bases like `Global_Rules.md` and `Lessons_Learned.md` grow, AI agen
 
 ### Quick Install (Recommended)
 
+**Linux / macOS:**
+
 ```bash
 # Remote installation (auto-detects OS and MCP clients)
 curl -fsSL https://raw.githubusercontent.com/axiom-juma/meridian/main/scripts/install.sh | bash
@@ -51,6 +53,10 @@ git clone https://github.com/axiom-juma/meridian.git
 cd meridian
 bash scripts/install.sh
 ```
+
+`install.sh` prefers `uv` when available (faster, and can fetch its own Python 3.11 even if the system Python is older) and falls back to `python3 -m venv` + `pip` otherwise. It verifies the install actually works (`meridian version`) before configuring any MCP client, so a broken install fails loudly instead of silently misconfiguring Claude Code/VSCode/OpenCode/Kimi CLI.
+
+**Windows:** not yet available as a one-line installer — use [Manual Installation](#manual-installation) below.
 
 ### Prerequisites
 
@@ -82,10 +88,13 @@ cd meridian
 uv python pin 3.11
 uv sync
 
-# Verify installation
-python -m meridian version
+# Install the package (editable) and verify
+uv pip install -e .
+.venv/bin/meridian version
 # → Axiom Meridian v0.1.0
 ```
+
+> **Note:** The package must be properly installed in the virtual environment (not just `uv sync`). If `.venv/bin/meridian` doesn't exist or `.venv/bin/meridian version` fails with an import error, run `uv pip install -e .` again from the project root — and see [Troubleshooting](#venvbinmeridian-does-not-exist-after-install) if it keeps failing. `python -m meridian version` (with `PYTHONPATH=src` if needed) still works as a fallback, but the `meridian` entry point is what MCP client configs should use (see [MCP Configuration](#mcp-configuration)).
 
 ### Knowledge Base Directory (Optional)
 
@@ -111,17 +120,16 @@ Register the server using the Claude Code CLI (writes to `~/.claude.json`):
 
 > **Note:** For normal development sessions, `analyze` is sufficient. Use `write` only for administration and migration.
 
-#### Option A — venv Python (recommended)
+#### Option A — native entry point (recommended)
 
-Use the Python interpreter from the virtual environment directly. This avoids PATH issues and dependency resolution overhead:
+`uv pip install -e .` registers a `meridian` command inside the venv (`.venv/bin/meridian`, via `[project.scripts]` in `pyproject.toml`). Point MCP clients at that binary directly instead of `python -m meridian` — one absolute path, no PATH resolution or argument-parsing surprises:
 
 ```bash
 # KNOWLEDGE_BASE_PATH is optional — Meridian auto-creates it if not set
 claude mcp add -s user \
   -e MERIDIAN_ACCESS_LEVEL=write \
   -- meridian \
-  "$PWD/.venv/bin/python" \
-  -m meridian mcp
+  "$PWD/.venv/bin/meridian" mcp
 ```
 
 To use a custom knowledge base location:
@@ -131,13 +139,14 @@ claude mcp add -s user \
   -e KNOWLEDGE_BASE_PATH="$HOME/my-knowledge" \
   -e MERIDIAN_ACCESS_LEVEL=write \
   -- meridian \
-  "$PWD/.venv/bin/python" \
-  -m meridian mcp
+  "$PWD/.venv/bin/meridian" mcp
 ```
 
 > **Do not use `~/.claude/settings.json` to register MCP servers** — that file controls agent permissions and plugins, not the MCP server list.
 
-> **⚠️ Avoid using `uv run` for MCP configuration** — PATH resolution issues often cause "command not found" errors. Use the venv Python directly (Option A above).
+> **⚠️ Avoid using `uv run` for MCP configuration** — PATH resolution issues often cause "command not found" errors. Use the venv entry point directly (Option A above).
+
+> If `.venv/bin/meridian` doesn't exist, the editable install didn't register the entry point — run `uv pip install -e .` again from the project root and check for errors.
 
 ### VSCode
 
@@ -148,8 +157,8 @@ Add the following to your VSCode `mcp.json` (access via Command Palette → "Pre
   "servers": {
     "meridian": {
       "type": "stdio",
-      "command": "/absolute/path/to/meridian/.venv/bin/python",
-      "args": ["-m", "meridian", "mcp"],
+      "command": "/absolute/path/to/meridian/.venv/bin/meridian",
+      "args": ["mcp"],
       "env": {
         "MERIDIAN_ACCESS_LEVEL": "write"
       }
@@ -158,19 +167,19 @@ Add the following to your VSCode `mcp.json` (access via Command Palette → "Pre
 }
 ```
 
-> **Important:** `KNOWLEDGE_BASE_PATH` is optional — Meridian auto-creates the knowledge base if not set. Use absolute path to the venv Python interpreter, not `uv run`.
+> **Important:** `KNOWLEDGE_BASE_PATH` is optional — Meridian auto-creates the knowledge base if not set. Use the absolute path to the venv's `meridian` entry point, not `uv run` or `python -m meridian`.
 
 ### OpenCode
 
-Add the following to your `opencode.json`:
+Add the following to your `opencode.json` (project-level or `~/.config/opencode/opencode.json`):
 
 ```json
 {
   "mcp": {
     "meridian": {
       "type": "local",
-      "command": ["/absolute/path/to/meridian/.venv/bin/python", "-m", "meridian", "mcp"],
-      "env": {
+      "command": ["/absolute/path/to/meridian/.venv/bin/meridian", "mcp"],
+      "environment": {
         "MERIDIAN_ACCESS_LEVEL": "write"
       }
     }
@@ -183,7 +192,16 @@ Add the following to your `opencode.json`:
 }
 ```
 
-> **Note:** `KNOWLEDGE_BASE_PATH` is optional — Meridian auto-creates the knowledge base if not set. Replace `/absolute/path/to/meridian/.venv/bin/python` with the actual path.
+> **Note:** `KNOWLEDGE_BASE_PATH` is optional — Meridian auto-creates the knowledge base if not set. Replace `/absolute/path/to/meridian/.venv/bin/meridian` with the actual path.
+>
+> **⚠️ Use `"environment"` not `"env"`:** the opencode config schema defines the environment variables field as `"environment"`. Using `"env"` causes the variables to be silently ignored.
+
+Verify the server is connected:
+
+```bash
+opencode mcp ls
+# → ✓ meridian connected
+```
 
 ### Kimi CLI
 
@@ -193,14 +211,8 @@ Add the following to `~/.kimi/mcp.json`:
 {
   "mcpServers": {
     "meridian": {
-      "command": "uv",
-      "args": [
-        "run",
-        "--directory",
-        "/path/to/meridian",
-        "--python", "3.11",
-        "python", "-m", "meridian", "mcp"
-      ],
+      "command": "/path/to/meridian/.venv/bin/meridian",
+      "args": ["mcp"],
       "env": {
         "KNOWLEDGE_BASE_PATH": "/path/to/meridian-kb",
         "MERIDIAN_ACCESS_LEVEL": "write"
@@ -210,7 +222,7 @@ Add the following to `~/.kimi/mcp.json`:
 }
 ```
 
-> Replace `/path/to/meridian` and `/path/to/meridian-kb` with your actual paths.
+> Replace `/path/to/meridian` and `/path/to/meridian-kb` with your actual paths. As with the other clients, prefer the venv's `meridian` entry point over `uv run` — it avoids the PATH/argument-parsing issues `uv run` triggers in MCP configuration (see Troubleshooting).
 
 ---
 
@@ -233,28 +245,31 @@ This was fixed in v0.1.0-post. If you see it, ensure `check_same_thread=False` i
 ### MCP server does not appear in `claude mcp list`
 
 1. Verify you used `claude mcp add`, not `~/.claude/settings.json`.
-2. Try using the venv Python path instead of `uv`.
+2. Try using the venv `meridian` entry point instead of `uv run`.
 3. Restart Claude Code after adding the server.
 
 ### "bash: -m: command not found" or "can't open file" errors
 
 This happens when using `uv run` in MCP configuration. The MCP client cannot resolve `uv` or argument parsing fails.
 
-**Solution:** Use the venv Python interpreter directly:
+**Solution:** Use the venv's `meridian` entry point directly:
 
 ```bash
 # Remove the problematic entry
 claude mcp remove meridian
 
-# Re-add using venv Python (KNOWLEDGE_BASE_PATH is optional now)
+# Re-add using the venv entry point (KNOWLEDGE_BASE_PATH is optional now)
 claude mcp add -s user \
   -e MERIDIAN_ACCESS_LEVEL=write \
   -- meridian \
-  "$PWD/.venv/bin/python" \
-  -m meridian mcp
+  "$PWD/.venv/bin/meridian" mcp
 ```
 
-For VSCode, update `mcp.json` to use the absolute path to `.venv/bin/python` instead of `uv`.
+For VSCode, update `mcp.json` to use the absolute path to `.venv/bin/meridian` instead of `uv`.
+
+### `.venv/bin/meridian` does not exist after install
+
+The editable install didn't register the `[project.scripts]` entry points. Run `uv pip install -e .` (or `pip install -e .`) again from the project root and check for errors — a common cause on macOS/Windows is a `.venv` inside a cloud-synced folder (iCloud Drive's "Desktop & Documents", OneDrive, Dropbox) getting its files renamed/duplicated by a sync conflict (look for files like `name 2.py`). If that's the case, `rm -rf .venv && uv sync && uv pip install -e .` fixes it; moving the project outside the synced folder prevents it recurring.
 
 ---
 
@@ -562,10 +577,12 @@ KNOWLEDGE_BASE_PATH/                 ← outside the repo
 
 1. **Markdown is the source of truth.** SQLite is the index and state. Never the reverse.
 2. **Nothing is written without explicit user approval.** All extractions go to `pending_proposals` first.
-3. **File reads are positional** via `file_offset` and `byte_length`. No full-file loads during queries.
+3. **Reads are served from the index, validated per file.** `detail="full"` queries read text from SQLite (`rules.text` / `lessons.what_happened`), not by re-reading the `.md` file per row. Freshness is checked once per distinct file against `indexed_files` (mtime fast path, sha256 arbiter on mismatch) — a stale or unindexed file returns `STALE_INDEX` rather than serving outdated text. `file_offset`/`byte_length` still exist, but only as write-path metadata. See [ADR-005](ADR-005-indexed-read-path.md).
 4. **Scope hierarchy is resolved** before every query. More specific rules have higher precedence.
 5. **Every rule is traceable** — which meeting originated it, which PR refined it, which lesson motivated it.
 6. **RAG and SQL coexist.** `query_rules()` uses semantic search when embeddings exist, and falls back to SQL automatically when they don't. The tool signature never changes.
+
+**Architecture decisions:** [ADR-001](ADR-001-response-serialization-format.md) (response serialization) · [ADR-002](ADR-002-dynamic-context-attributes.md) (dynamic attributes) · [ADR-003](ADR-003-legacy-scope-inference.md) (legacy scope inference) · [ADR-004](ADR-004-id-counters-and-nplus1-fix.md) (ID counters, N+1 fix) · [ADR-005](ADR-005-indexed-read-path.md) (indexed read path)
 
 ---
 

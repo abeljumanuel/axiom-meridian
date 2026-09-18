@@ -60,6 +60,11 @@ def load_scope_attributes(conn: sqlite3.Connection, scope_id: str) -> dict[str, 
     return {row[0]: row[1] for row in cursor.fetchall()}
 
 
+# SQLite's default SQLITE_MAX_VARIABLE_NUMBER is 999+; batch IN(...) queries
+# well under that so a single filter_by_attributes call never risks the limit.
+_BATCH_SIZE = 500
+
+
 def filter_by_attributes(
     conn: sqlite3.Connection,
     rule_ids: list[str],
@@ -69,25 +74,36 @@ def filter_by_attributes(
     Filtra reglas por compatibilidad de atributos (ADR-002).
 
     Para cada rule_id:
-    1. SELECT key, value FROM rule_attributes WHERE rule_id = ?
-    2. Si no hay rule_attributes → INCLUIR (aplica a todos)
-    3. Si hay rule_attributes → INCLUIR solo si TODOS los atributos
+    1. Si no hay rule_attributes → INCLUIR (aplica a todos)
+    2. Si hay rule_attributes → INCLUIR solo si TODOS los atributos
        coinciden con project_attributes (AND logic)
-    4. Si un key de rule_attributes no existe en project_attributes → INCLUIR
+    3. Si un key de rule_attributes no existe en project_attributes → INCLUIR
        (inclusión conservadora para prevenir pérdida de conocimiento)
 
-    Retorna lista de rule_ids que pasan el filtro.
+    Retorna lista de rule_ids que pasan el filtro, en el mismo orden de entrada.
+
+    Carga todos los rule_attributes en lotes de _BATCH_SIZE (ceil(n/500)
+    consultas) en lugar de una consulta por rule_id (fix del N+1 documentado
+    en reporte-rendimiento.md §3.2).
     """
     if not rule_ids:
         return []
 
+    attrs_by_rule: dict[str, dict[str, str]] = {}
+    for start in range(0, len(rule_ids), _BATCH_SIZE):
+        batch = rule_ids[start : start + _BATCH_SIZE]
+        placeholders = ", ".join("?" for _ in batch)
+        cursor = conn.execute(
+            "SELECT rule_id, key, value FROM rule_attributes "
+            f"WHERE rule_id IN ({placeholders})",  # noqa: S608
+            batch,
+        )
+        for rule_id, key, value in cursor.fetchall():
+            attrs_by_rule.setdefault(rule_id, {})[key] = value
+
     result: list[str] = []
     for rule_id in rule_ids:
-        cursor = conn.execute(
-            "SELECT key, value FROM rule_attributes WHERE rule_id = ?",
-            (rule_id,),
-        )
-        rule_attrs = {row[0]: row[1] for row in cursor.fetchall()}
+        rule_attrs = attrs_by_rule.get(rule_id)
 
         if not rule_attrs:
             result.append(rule_id)

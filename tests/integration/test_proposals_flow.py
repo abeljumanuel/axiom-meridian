@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -10,6 +11,7 @@ from meridian.db.connection import get_connection, initialize_db
 from meridian.tools.knowledge_management import (
     approve_proposal,
     edit_proposal,
+    promote_rule,
     reject_proposal,
 )
 
@@ -140,3 +142,84 @@ def test_approve_with_attributes(tmp_kb):
 
     assert attrs["framework"] == "quarkus"
     assert attrs["component_role"] == "gateway"
+
+
+def test_approve_proposal_keeps_indexed_files_and_tags_in_sync(tmp_kb):
+    """T05 acceptance: after approve_proposal, indexed_files.content_hash
+    matches the real .md on disk, and rule_tags mirrors the metadata tags."""
+    kb_path, conn = tmp_kb
+    dest_file = kb_path / "knowledge-base" / "global" / "java.md"
+    dest_file.write_text("")
+
+    prop_id = "prop-0001"
+    conn.execute(
+        """
+        INSERT INTO pending_proposals
+        (id, type, scope_id, proposed_text, metadata, source_type)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            prop_id,
+            "rule",
+            "global-java",
+            "Rule with tags.",
+            json.dumps({"tags": ["go", "fiber"]}),
+            "manual",
+        ),
+    )
+    conn.commit()
+
+    result = approve_proposal(prop_id)
+
+    row = conn.execute(
+        "SELECT content_hash FROM indexed_files WHERE file_path = ?",
+        (str(dest_file),),
+    ).fetchone()
+    assert row is not None
+    assert row[0] == hashlib.sha256(dest_file.read_bytes()).hexdigest()
+
+    tags = {
+        r[0]
+        for r in conn.execute(
+            "SELECT tag FROM rule_tags WHERE rule_id = ?", (result["code"],)
+        )
+    }
+    assert tags == {"go", "fiber"}
+
+
+def test_promote_rule_refreshes_indexed_files_for_affected_file(tmp_kb):
+    """T05 acceptance: after promote_rule (_mark_deprecated_in_md),
+    indexed_files for the affected .md reflects the deprecation edit."""
+    kb_path, conn = tmp_kb
+    dest_file = kb_path / "knowledge-base" / "projects" / "example.md"
+    dest_file.write_text("## RN-EXAMPLE-001\nSome rule text.\n")
+
+    conn.execute(
+        """
+        INSERT INTO rules
+        (id, scope_id, code, text, category, severity, file_path, file_offset, byte_length)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "RN-EXAMPLE-001",
+            "project-project-example",
+            "RN-EXAMPLE-001",
+            "Some rule text.",
+            "general",
+            "medium",
+            str(dest_file),
+            0,
+            len("## RN-EXAMPLE-001\nSome rule text.\n".encode("utf-8")) - 1,
+        ),
+    )
+    conn.commit()
+
+    promote_rule("RN-EXAMPLE-001", "global-quarkus")
+
+    row = conn.execute(
+        "SELECT content_hash FROM indexed_files WHERE file_path = ?",
+        (str(dest_file),),
+    ).fetchone()
+    assert row is not None
+    assert row[0] == hashlib.sha256(dest_file.read_bytes()).hexdigest()
+    assert b"**Status:** deprecated" in dest_file.read_bytes()

@@ -99,7 +99,7 @@ detect_mcp_clients() {
 confirm_uninstall() {
     log_warn "This will remove:"
     echo "  - $INSTALL_DIR"
-    echo "  - MCP client configurations: ${CLIENTS_TO_CLEAN[*]:-none}"
+    echo "  - The 'meridian' entry from these MCP client configs (other servers in the same file are left untouched): ${CLIENTS_TO_CLEAN[*]:-none}"
     echo
     log_warn "The knowledge base will NOT be removed (your data is safe)."
     echo
@@ -145,6 +145,51 @@ remove_meridian_installation() {
     fi
 }
 
+# Remove the given dotted key paths (e.g. "mcp.meridian") from a JSON
+# config file in place, leaving every other key (other MCP servers
+# configured in the same file included) untouched. Prints exactly one of
+# REMOVED / NOTFOUND / SKIP:<reason> to stdout.
+_remove_json_keys() {
+    local file="$1"
+    shift
+    python3 - "$file" "$@" <<'PYEOF'
+import json
+import sys
+
+path = sys.argv[1]
+paths_to_remove = sys.argv[2:]
+
+try:
+    with open(path) as f:
+        data = json.load(f)
+except (OSError, json.JSONDecodeError) as exc:
+    print(f"SKIP:{exc}")
+    sys.exit(0)
+
+removed_any = False
+for dotted in paths_to_remove:
+    keys = dotted.split(".")
+    node = data
+    found = True
+    for k in keys[:-1]:
+        if not isinstance(node, dict) or k not in node:
+            found = False
+            break
+        node = node[k]
+    if found and isinstance(node, dict) and keys[-1] in node:
+        del node[keys[-1]]
+        removed_any = True
+
+if removed_any:
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+    print("REMOVED")
+else:
+    print("NOTFOUND")
+PYEOF
+}
+
 remove_claude_code() {
     if [ "$DRY_RUN" = "1" ]; then
         log_info "[DRY RUN] Would remove from Claude Code"
@@ -166,7 +211,7 @@ remove_claude_code() {
 
 remove_kimi_cli() {
     if [ "$DRY_RUN" = "1" ]; then
-        log_info "[DRY RUN] Would remove from Kimi CLI"
+        log_info "[DRY RUN] Would remove the meridian entry from Kimi CLI config"
         return
     fi
 
@@ -174,21 +219,29 @@ remove_kimi_cli() {
 
     local kimi_config="$HOME/.kimi/mcp.json"
 
-    if [ -f "$kimi_config" ]; then
-        if grep -q '"meridian"' "$kimi_config" 2>/dev/null; then
-            rm -f "$kimi_config"
-            log_info "Removed from Kimi CLI"
-        else
-            log_info "Meridian not configured in Kimi CLI"
-        fi
-    else
+    if [ ! -f "$kimi_config" ]; then
         log_info "Kimi CLI config not found"
+        return
     fi
+
+    local result
+    result="$(_remove_json_keys "$kimi_config" "mcpServers.meridian")"
+    case "$result" in
+        REMOVED)
+            log_info "Removed meridian entry from Kimi CLI config (other servers left untouched)"
+            ;;
+        NOTFOUND)
+            log_info "Meridian not configured in Kimi CLI"
+            ;;
+        *)
+            log_warn "Could not update Kimi CLI config (${result#SKIP:}) — left untouched. Remove 'mcpServers.meridian' from $kimi_config manually."
+            ;;
+    esac
 }
 
 remove_opencode() {
     if [ "$DRY_RUN" = "1" ]; then
-        log_info "[DRY RUN] Would remove from OpenCode"
+        log_info "[DRY RUN] Would remove the meridian entry from OpenCode config"
         return
     fi
 
@@ -196,21 +249,29 @@ remove_opencode() {
 
     local oc_config="$HOME/.config/opencode/opencode.json"
 
-    if [ -f "$oc_config" ]; then
-        if grep -q '"meridian"' "$oc_config" 2>/dev/null; then
-            rm -f "$oc_config"
-            log_info "Removed OpenCode config"
-        else
-            log_info "Meridian not configured in OpenCode"
-        fi
-    else
+    if [ ! -f "$oc_config" ]; then
         log_info "OpenCode config not found"
+        return
     fi
+
+    local result
+    result="$(_remove_json_keys "$oc_config" "mcp.meridian" "permission.mcp.meridian")"
+    case "$result" in
+        REMOVED)
+            log_info "Removed meridian entry from OpenCode config (other servers left untouched)"
+            ;;
+        NOTFOUND)
+            log_info "Meridian not configured in OpenCode"
+            ;;
+        *)
+            log_warn "Could not update OpenCode config (${result#SKIP:}) — left untouched. Remove 'mcp.meridian' and 'permission.mcp.meridian' from $oc_config manually."
+            ;;
+    esac
 }
 
 remove_vscode() {
     if [ "$DRY_RUN" = "1" ]; then
-        log_info "[DRY RUN] Would remove from VSCode"
+        log_info "[DRY RUN] Would remove the meridian entry from VSCode config"
         return
     fi
 
@@ -218,16 +279,24 @@ remove_vscode() {
 
     local vscode_config="$HOME/.config/Code/User/mcp.json"
 
-    if [ -f "$vscode_config" ]; then
-        if grep -q '"meridian"' "$vscode_config" 2>/dev/null; then
-            rm -f "$vscode_config"
-            log_info "Removed VSCode config"
-        else
-            log_info "Meridian not configured in VSCode"
-        fi
-    else
+    if [ ! -f "$vscode_config" ]; then
         log_info "VSCode config not found"
+        return
     fi
+
+    local result
+    result="$(_remove_json_keys "$vscode_config" "servers.meridian")"
+    case "$result" in
+        REMOVED)
+            log_info "Removed meridian entry from VSCode config (other servers left untouched)"
+            ;;
+        NOTFOUND)
+            log_info "Meridian not configured in VSCode"
+            ;;
+        *)
+            log_warn "Could not update VSCode config (${result#SKIP:}) — left untouched. Remove 'servers.meridian' from $vscode_config manually."
+            ;;
+    esac
 }
 
 remove_mcp_configs() {

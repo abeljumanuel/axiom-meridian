@@ -161,6 +161,33 @@ CREATE TABLE access_log (
   transport   TEXT
 );
 
+-- Contadores atómicos de IDs secuenciales (reemplaza MAX(id) LIKE 'prefix-%')
+CREATE TABLE id_counters (
+  name TEXT PRIMARY KEY,
+  next INTEGER NOT NULL
+);
+
+-- Fingerprint de archivos .md indexados (frescura por-archivo, Opción C)
+CREATE TABLE indexed_files (
+  file_path    TEXT PRIMARY KEY,
+  mtime        REAL NOT NULL,
+  content_hash TEXT NOT NULL,
+  updated_at   TEXT DEFAULT (datetime('now'))
+);
+
+-- Tags normalizados (reemplaza el filtro LIKE '%tag%' por matching exacto)
+CREATE TABLE rule_tags (
+  rule_id TEXT NOT NULL REFERENCES rules(id) ON DELETE CASCADE,
+  tag     TEXT NOT NULL,
+  PRIMARY KEY (rule_id, tag)
+);
+
+CREATE TABLE lesson_tags (
+  lesson_id TEXT NOT NULL REFERENCES lessons(id) ON DELETE CASCADE,
+  tag       TEXT NOT NULL,
+  PRIMARY KEY (lesson_id, tag)
+);
+
 -- Índices para rendimiento
 CREATE INDEX idx_rules_scope_id ON rules(scope_id);
 CREATE INDEX idx_rules_severity ON rules(severity);
@@ -173,21 +200,34 @@ CREATE INDEX idx_pending_proposals_status ON pending_proposals(status);
 CREATE INDEX idx_pending_proposals_target_id ON pending_proposals(target_id);
 CREATE INDEX idx_access_log_timestamp ON access_log(timestamp);
 CREATE INDEX idx_access_log_tool_name ON access_log(tool_name);
+CREATE INDEX idx_rule_history_rule_id ON rule_history(rule_id);
+CREATE INDEX idx_lesson_history_lesson_id ON lesson_history(lesson_id);
+CREATE INDEX idx_pending_proposals_scope_id ON pending_proposals(scope_id);
+CREATE INDEX idx_pr_audits_ref_project ON pr_audits(pr_ref, project_id);
+CREATE INDEX idx_rule_tags_tag ON rule_tags(tag);
+CREATE INDEX idx_lesson_tags_tag ON lesson_tags(tag);
 
 -- Inserts iniciales de scopes
 INSERT INTO scopes VALUES ('global',              'global', 'Global',              NULL);
 INSERT INTO scopes VALUES ('global-java',         'global', 'Global Java',         'global');
 INSERT INTO scopes VALUES ('global-quarkus',      'global', 'Global Quarkus',      'global-java');
 INSERT INTO scopes VALUES ('global-spring-boot',  'global', 'Global Spring Boot',  'global-java');
-INSERT INTO scopes VALUES ('global-nestjs',       'global', 'Global NestJS',       'global');
+INSERT INTO scopes VALUES ('global-nodejs',       'global', 'Global Node.js',      'global');
+INSERT INTO scopes VALUES ('global-express',      'global', 'Global Express',      'global-nodejs');
+INSERT INTO scopes VALUES ('global-adonisjs',     'global', 'Global AdonisJS',     'global-nodejs');
+INSERT INTO scopes VALUES ('global-nestjs',       'global', 'Global NestJS',       'global-nodejs');
+INSERT INTO scopes VALUES ('global-react',        'global', 'Global React',        'global');
 INSERT INTO scopes VALUES ('global-go',           'global', 'Global Go',           'global');
 INSERT INTO scopes VALUES ('global-go-fiber',     'global', 'Global Go Fiber',     'global-go');
 INSERT INTO scopes VALUES ('global-go-gin',       'global', 'Global Go Gin',       'global-go');
 INSERT INTO scopes VALUES ('global-flutter',      'global', 'Global Flutter',      'global');
+INSERT INTO scopes VALUES ('global-python',       'global', 'Global Python',       'global');
+INSERT INTO scopes VALUES ('global-fastmcp',      'global', 'Global FastMCP',      'global-python');
 
 INSERT INTO scopes VALUES ('project-project-example', 'project', 'Project Example',  'global-quarkus');
 INSERT INTO scopes VALUES ('project-other-project-example',     'project', 'other-project-example',      'global-nestjs');
 INSERT INTO scopes VALUES ('project-ledger',         'project', 'Ledger',          'global-flutter');
+INSERT INTO scopes VALUES ('project-axiom-meridian', 'project', 'Axiom Meridian',  'global-fastmcp');
 
 -- Atributos de proyecto
 INSERT INTO scope_attributes VALUES ('project-project-example', 'framework',      'quarkus');
@@ -197,13 +237,22 @@ INSERT INTO scope_attributes VALUES ('project-other-project-example',     'frame
 INSERT INTO scope_attributes VALUES ('project-other-project-example',     'component_role', 'last-mile');
 INSERT INTO scope_attributes VALUES ('project-ledger',         'framework',      'flutter');
 INSERT INTO scope_attributes VALUES ('project-ledger',         'component_role', 'mobile-client');
+INSERT INTO scope_attributes VALUES ('project-axiom-meridian', 'framework',      'fastmcp');
+INSERT INTO scope_attributes VALUES ('project-axiom-meridian', 'component_role', 'mcp-server');
+INSERT INTO scope_attributes VALUES ('project-axiom-meridian', 'runtime_version','python-3.11');
 
 -- Atributos de scope global
 INSERT INTO scope_attributes VALUES ('global-java',        'framework', 'java');
 INSERT INTO scope_attributes VALUES ('global-quarkus',     'framework', 'quarkus');
 INSERT INTO scope_attributes VALUES ('global-spring-boot', 'framework', 'spring-boot');
+INSERT INTO scope_attributes VALUES ('global-nodejs',      'framework', 'nodejs');
+INSERT INTO scope_attributes VALUES ('global-express',     'framework', 'express');
+INSERT INTO scope_attributes VALUES ('global-adonisjs',    'framework', 'adonisjs');
 INSERT INTO scope_attributes VALUES ('global-nestjs',      'framework', 'nestjs');
+INSERT INTO scope_attributes VALUES ('global-react',       'framework', 'react');
 INSERT INTO scope_attributes VALUES ('global-go',          'framework', 'go');
 INSERT INTO scope_attributes VALUES ('global-go-fiber',    'framework', 'go-fiber');
 INSERT INTO scope_attributes VALUES ('global-go-gin',      'framework', 'go-gin');
 INSERT INTO scope_attributes VALUES ('global-flutter',     'framework', 'flutter');
+INSERT INTO scope_attributes VALUES ('global-python',      'framework', 'python');
+INSERT INTO scope_attributes VALUES ('global-fastmcp',     'framework', 'fastmcp');

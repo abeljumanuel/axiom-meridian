@@ -3,7 +3,7 @@
 import json
 import sys
 
-_USAGE = "Usage: python -m meridian [mcp|serve|version|db|migrate|proposals|query]"
+_USAGE = "Usage: python -m meridian [mcp|serve|version|db|migrate|index|proposals|query]"
 
 
 def _print_json(data: object) -> None:
@@ -75,6 +75,32 @@ def _cmd_migrate(argv: list[str]) -> None:
     from meridian.tools.knowledge_management import convert_to_atomic_format
 
     _print_json(convert_to_atomic_format(filepath, scope_id, doc_type))
+
+
+def _cmd_index(argv: list[str]) -> None:
+    usage = "Usage: python -m meridian index <rules|lessons> <file> --scope <scope_id>"
+    if len(argv) < 5 or argv[4] != "--scope" or len(argv) < 6:
+        print(usage)
+        sys.exit(1)
+
+    doc_type, filepath, scope_id = argv[2], argv[3], argv[5]
+    from meridian.config import get_db_path
+    from meridian.db.connection import initialize_db
+
+    initialize_db(get_db_path())
+
+    if doc_type == "rules":
+        from meridian.tools.knowledge_management import index_rules_from_markdown
+
+        result = index_rules_from_markdown(filepath, default_scope_id=scope_id, mode="atomic")
+    elif doc_type == "lessons":
+        from meridian.tools.knowledge_management import index_lessons_from_markdown
+
+        result = index_lessons_from_markdown(filepath, default_scope_id=scope_id, mode="atomic")
+    else:
+        print(f"Unknown index doc_type: {doc_type}. Use 'rules' or 'lessons'.")
+        sys.exit(1)
+    _print_json(result)
 
 
 def _cmd_proposals_list(argv: list[str]) -> None:
@@ -154,6 +180,7 @@ _COMMANDS = {
     "serve": _cmd_serve,
     "db": _cmd_db,
     "migrate": _cmd_migrate,
+    "index": _cmd_index,
     "proposals": _cmd_proposals,
     "query": _cmd_query,
 }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import platform
+import threading
 from typing import ClassVar
 
 logger = logging.getLogger(__name__)
@@ -15,13 +16,16 @@ class _Embedder:
     _instance: ClassVar[_Embedder | None] = None
     _model: ClassVar[object | None] = None
     _device: ClassVar[str | None] = None
+    _lock: ClassVar[threading.Lock] = threading.Lock()
 
     MODEL_NAME: ClassVar[str] = "BAAI/bge-small-en-v1.5"
     EMBEDDING_DIM: ClassVar[int] = 384
 
     def __new__(cls) -> _Embedder:  # noqa: D102
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
         return cls._instance
 
     def _detect_device(self) -> str:
@@ -46,15 +50,19 @@ class _Embedder:
         if self._model is not None:
             return self._model
 
-        from sentence_transformers import SentenceTransformer
+        with self._lock:
+            if self._model is not None:
+                return self._model
 
-        self._device = self._detect_device()
-        logger.info(
-            "Loading embedding model %s on device %s",
-            self.MODEL_NAME,
-            self._device,
-        )
-        self._model = SentenceTransformer(self.MODEL_NAME, device=self._device)
+            from sentence_transformers import SentenceTransformer
+
+            self._device = self._detect_device()
+            logger.info(
+                "Loading embedding model %s on device %s",
+                self.MODEL_NAME,
+                self._device,
+            )
+            self._model = SentenceTransformer(self.MODEL_NAME, device=self._device)
         return self._model
 
     def encode(self, texts: list[str]) -> list[list[float]]:

@@ -3,9 +3,20 @@
 import json
 import sys
 
+_USAGE = "Usage: python -m meridian [mcp|serve|version|db|migrate|index|proposals|query]"
+
 
 def _print_json(data: object) -> None:
     print(json.dumps(data, indent=2, ensure_ascii=False, default=str))
+
+
+def _get_flag(argv: list[str], name: str) -> str | None:
+    """Return the value following a `--flag` in argv, or None if absent."""
+    if name in argv:
+        idx = argv.index(name)
+        if idx + 1 < len(argv):
+            return argv[idx + 1]
+    return None
 
 
 def _check_python_environment() -> None:
@@ -22,162 +33,171 @@ def _check_python_environment() -> None:
         sys.exit(1)
 
 
+def _cmd_version(argv: list[str]) -> None:
+    from meridian import __version__
+
+    print(f"Axiom Meridian v{__version__}")
+
+
+def _cmd_mcp(argv: list[str]) -> None:
+    _check_python_environment()
+    from meridian.server import run_stdio
+
+    run_stdio()
+
+
+def _cmd_serve(argv: list[str]) -> None:
+    from meridian.server import run_http
+
+    port = int(argv[2]) if len(argv) > 2 else 8080
+    run_http(port)
+
+
+def _cmd_db(argv: list[str]) -> None:
+    if len(argv) < 3 or argv[2] != "init":
+        print("Usage: python -m meridian db init")
+        sys.exit(1)
+    from meridian.config import get_db_path
+    from meridian.db.connection import initialize_db
+
+    db_path = get_db_path()
+    initialize_db(db_path)
+    print(f"Database initialized at {db_path}")
+
+
+def _cmd_migrate(argv: list[str]) -> None:
+    usage = "Usage: python -m meridian migrate <rules|lessons> <file> --scope <scope_id>"
+    if len(argv) < 5 or argv[4] != "--scope" or len(argv) < 6:
+        print(usage)
+        sys.exit(1)
+
+    doc_type, filepath, scope_id = argv[2], argv[3], argv[5]
+    from meridian.tools.knowledge_management import convert_to_atomic_format
+
+    _print_json(convert_to_atomic_format(filepath, scope_id, doc_type))
+
+
+def _cmd_index(argv: list[str]) -> None:
+    usage = "Usage: python -m meridian index <rules|lessons> <file> --scope <scope_id>"
+    if len(argv) < 5 or argv[4] != "--scope" or len(argv) < 6:
+        print(usage)
+        sys.exit(1)
+
+    doc_type, filepath, scope_id = argv[2], argv[3], argv[5]
+    from meridian.config import get_db_path
+    from meridian.db.connection import initialize_db
+
+    initialize_db(get_db_path())
+
+    if doc_type == "rules":
+        from meridian.tools.knowledge_management import index_rules_from_markdown
+
+        result = index_rules_from_markdown(filepath, default_scope_id=scope_id, mode="atomic")
+    elif doc_type == "lessons":
+        from meridian.tools.knowledge_management import index_lessons_from_markdown
+
+        result = index_lessons_from_markdown(filepath, default_scope_id=scope_id, mode="atomic")
+    else:
+        print(f"Unknown index doc_type: {doc_type}. Use 'rules' or 'lessons'.")
+        sys.exit(1)
+    _print_json(result)
+
+
+def _cmd_proposals_list(argv: list[str]) -> None:
+    from meridian.tools.knowledge_management import list_pending_proposals
+
+    _print_json(list_pending_proposals(status=_get_flag(argv, "--status")))
+
+
+def _cmd_proposals_approve(argv: list[str]) -> None:
+    if len(argv) < 4:
+        print("Usage: python -m meridian proposals approve <id>")
+        sys.exit(1)
+    from meridian.tools.knowledge_management import approve_proposal
+
+    _print_json(approve_proposal(argv[3]))
+
+
+def _cmd_proposals(argv: list[str]) -> None:
+    if len(argv) < 3:
+        print("Usage: python -m meridian proposals [list|approve]")
+        sys.exit(1)
+
+    subcommand = argv[2]
+    if subcommand == "list":
+        _cmd_proposals_list(argv)
+    elif subcommand == "approve":
+        _cmd_proposals_approve(argv)
+    else:
+        print(f"Unknown proposals subcommand: {subcommand}")
+        sys.exit(1)
+
+
+def _cmd_query_rules(argv: list[str]) -> None:
+    project_id = _get_flag(argv, "--project")
+    if project_id is None:
+        print("Usage: python -m meridian query rules --project <project_id>")
+        sys.exit(1)
+    from meridian.tools.knowledge_consumption import query_rules
+
+    print(
+        query_rules(
+            project_id=project_id,
+            category=_get_flag(argv, "--category"),
+            severity=_get_flag(argv, "--severity"),
+        )
+    )
+
+
+def _cmd_query_lessons(argv: list[str]) -> None:
+    project_id = _get_flag(argv, "--project")
+    if project_id is None:
+        print("Usage: python -m meridian query lessons --project <project_id>")
+        sys.exit(1)
+    from meridian.tools.knowledge_consumption import query_lessons
+
+    print(query_lessons(project_id=project_id, area=_get_flag(argv, "--area")))
+
+
+def _cmd_query(argv: list[str]) -> None:
+    if len(argv) < 3:
+        print("Usage: python -m meridian query [rules|lessons]")
+        sys.exit(1)
+
+    subcommand = argv[2]
+    if subcommand == "rules":
+        _cmd_query_rules(argv)
+    elif subcommand == "lessons":
+        _cmd_query_lessons(argv)
+    else:
+        print(f"Unknown query subcommand: {subcommand}")
+        sys.exit(1)
+
+
+_COMMANDS = {
+    "version": _cmd_version,
+    "mcp": _cmd_mcp,
+    "serve": _cmd_serve,
+    "db": _cmd_db,
+    "migrate": _cmd_migrate,
+    "index": _cmd_index,
+    "proposals": _cmd_proposals,
+    "query": _cmd_query,
+}
+
+
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: python -m meridian [mcp|serve|version|db|migrate|index|proposals|query]")
+        print(_USAGE)
         sys.exit(1)
 
-    command = sys.argv[1]
-
-    if command == "version":
-        from meridian import __version__
-        print(f"Axiom Meridian v{__version__}")
-
-    elif command == "mcp":
-        _check_python_environment()
-        from meridian.server import run_stdio
-        run_stdio()
-
-    elif command == "serve":
-        from meridian.server import run_http
-        port = int(sys.argv[2]) if len(sys.argv) > 2 else 8080
-        run_http(port)
-
-    elif command == "db":
-        if len(sys.argv) < 3 or sys.argv[2] != "init":
-            print("Usage: python -m meridian db init")
-            sys.exit(1)
-        from meridian.config import get_db_path
-        from meridian.db.connection import initialize_db
-        db_path = get_db_path()
-        initialize_db(db_path)
-        print(f"Database initialized at {db_path}")
-
-    elif command == "migrate":
-        if len(sys.argv) < 5:
-            print("Usage: python -m meridian migrate <rules|lessons> <file> --scope <scope_id>")
-            sys.exit(1)
-        doc_type = sys.argv[2]
-        filepath = sys.argv[3]
-        if sys.argv[4] != "--scope" or len(sys.argv) < 6:
-            print("Usage: python -m meridian migrate <rules|lessons> <file> --scope <scope_id>")
-            sys.exit(1)
-        scope_id = sys.argv[5]
-        from meridian.tools.knowledge_management import convert_to_atomic_format
-        result = convert_to_atomic_format(filepath, scope_id, doc_type)
-        _print_json(result)
-
-    elif command == "index":
-        if len(sys.argv) < 5:
-            print("Usage: python -m meridian index <rules|lessons> <file> --scope <scope_id>")
-            sys.exit(1)
-        doc_type = sys.argv[2]
-        filepath = sys.argv[3]
-        if sys.argv[4] != "--scope" or len(sys.argv) < 6:
-            print("Usage: python -m meridian index <rules|lessons> <file> --scope <scope_id>")
-            sys.exit(1)
-        scope_id = sys.argv[5]
-
-        from meridian.config import get_db_path
-        from meridian.db.connection import initialize_db
-        initialize_db(get_db_path())
-
-        if doc_type == "rules":
-            from meridian.tools.knowledge_management import index_rules_from_markdown
-            result = index_rules_from_markdown(filepath, default_scope_id=scope_id, mode="atomic")
-        elif doc_type == "lessons":
-            from meridian.tools.knowledge_management import index_lessons_from_markdown
-            result = index_lessons_from_markdown(filepath, default_scope_id=scope_id, mode="atomic")
-        else:
-            print(f"Unknown index doc_type: {doc_type}. Use 'rules' or 'lessons'.")
-            sys.exit(1)
-        _print_json(result)
-
-    elif command == "proposals":
-        if len(sys.argv) < 3:
-            print("Usage: python -m meridian proposals [list|approve]")
-            sys.exit(1)
-        subcommand = sys.argv[2]
-        if subcommand == "list":
-            status = None
-            if "--status" in sys.argv:
-                idx = sys.argv.index("--status")
-                if idx + 1 < len(sys.argv):
-                    status = sys.argv[idx + 1]
-            from meridian.tools.knowledge_management import list_pending_proposals
-            proposals = list_pending_proposals(status=status)
-            _print_json(proposals)
-        elif subcommand == "approve":
-            if len(sys.argv) < 4:
-                print("Usage: python -m meridian proposals approve <id>")
-                sys.exit(1)
-            proposal_id = sys.argv[3]
-            from meridian.tools.knowledge_management import approve_proposal
-            result = approve_proposal(proposal_id)
-            _print_json(result)
-        else:
-            print(f"Unknown proposals subcommand: {subcommand}")
-            sys.exit(1)
-
-    elif command == "query":
-        if len(sys.argv) < 3:
-            print("Usage: python -m meridian query [rules|lessons]")
-            sys.exit(1)
-        subcommand = sys.argv[2]
-        if subcommand == "rules":
-            project_id = None
-            category = None
-            severity = None
-            if "--project" in sys.argv:
-                idx = sys.argv.index("--project")
-                if idx + 1 < len(sys.argv):
-                    project_id = sys.argv[idx + 1]
-            if "--category" in sys.argv:
-                idx = sys.argv.index("--category")
-                if idx + 1 < len(sys.argv):
-                    category = sys.argv[idx + 1]
-            if "--severity" in sys.argv:
-                idx = sys.argv.index("--severity")
-                if idx + 1 < len(sys.argv):
-                    severity = sys.argv[idx + 1]
-            if project_id is None:
-                print("Usage: python -m meridian query rules --project <project_id>")
-                sys.exit(1)
-            from meridian.tools.knowledge_consumption import query_rules
-            result = query_rules(
-                project_id=project_id,
-                category=category,
-                severity=severity,
-            )
-            print(result)
-        elif subcommand == "lessons":
-            project_id = None
-            area = None
-            if "--project" in sys.argv:
-                idx = sys.argv.index("--project")
-                if idx + 1 < len(sys.argv):
-                    project_id = sys.argv[idx + 1]
-            if "--area" in sys.argv:
-                idx = sys.argv.index("--area")
-                if idx + 1 < len(sys.argv):
-                    area = sys.argv[idx + 1]
-            if project_id is None:
-                print("Usage: python -m meridian query lessons --project <project_id>")
-                sys.exit(1)
-            from meridian.tools.knowledge_consumption import query_lessons
-            result = query_lessons(
-                project_id=project_id,
-                area=area,
-            )
-            print(result)
-        else:
-            print(f"Unknown query subcommand: {subcommand}")
-            sys.exit(1)
-
-    else:
-        print(f"Unknown command: {command}")
-        print("Usage: python -m meridian [mcp|serve|version|db|migrate|index|proposals|query]")
+    handler = _COMMANDS.get(sys.argv[1])
+    if handler is None:
+        print(f"Unknown command: {sys.argv[1]}")
+        print(_USAGE)
         sys.exit(1)
+
+    handler(sys.argv)
 
 
 if __name__ == "__main__":

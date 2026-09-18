@@ -11,6 +11,8 @@
 #   INSTALL_DIR=/path/to/install   - Custom installation directory (default: ~/.meridian)
 #   KNOWLEDGE_BASE_PATH=/path    - Custom knowledge base path
 #   SKIP_MCP=1                    - Skip MCP client configuration
+#   SEED_KB=1                     - Copy+index the repo's example knowledge base without asking
+#   SEED_KB=0                     - Skip seeding the example knowledge base without asking
 #   DRY_RUN=1                     - Show what would be done without executing
 #
 # Prefers `uv` (https://docs.astral.sh/uv/) when available — matches the
@@ -229,6 +231,82 @@ create_knowledge_base() {
     export KNOWLEDGE_BASE_PATH="$KB_PATH"
 }
 
+seed_knowledge_base() {
+    if [ "$SEED_KB" = "0" ]; then
+        log_warn "Skipping example knowledge base seeding (SEED_KB=0)"
+        return
+    fi
+
+    local repo_root
+    repo_root="$(dirname "$SCRIPT_DIR")"
+
+    if [ ! -d "$repo_root/knowledge-base" ] && [ ! -d "$repo_root/lessons" ]; then
+        return
+    fi
+
+    if [ "$SEED_KB" != "1" ]; then
+        log_info "The repo ships example knowledge (Clean Code rules, Java sample)."
+        read -p "Copy and index it into your knowledge base now? [y/N] " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            log_info "Skipped. Re-run with SEED_KB=1 to seed it later without prompting."
+            return
+        fi
+    fi
+
+    log_step "Seeding example knowledge base..."
+
+    local seeded=0
+    for src_dir_doc_type in "knowledge-base:rules" "lessons:lessons"; do
+        local src_dir="${src_dir_doc_type%%:*}"
+        local doc_type="${src_dir_doc_type##*:}"
+
+        [ -d "$repo_root/$src_dir" ] || continue
+
+        for sub in global projects; do
+            local src_sub="$repo_root/$src_dir/$sub"
+            [ -d "$src_sub" ] || continue
+
+            for f in "$src_sub"/*.md; do
+                [ -e "$f" ] || continue
+
+                local basename_noext
+                basename_noext="$(basename "$f" .md)"
+                local dest="$KB_PATH/$src_dir/$sub/$(basename "$f")"
+                cp "$f" "$dest"
+
+                # Mirrors _scope_to_file_path's own convention: general.md
+                # is the "global" scope itself; other global/*.md files map
+                # to global-{name}; projects/*.md map to project-{name}.
+                # Blocks with their own explicit **Scope:** field (like the
+                # bundled Clean Code rules) override this at index time
+                # anyway — this is only the fallback.
+                local scope
+                if [ "$sub" = "projects" ]; then
+                    scope="project-$basename_noext"
+                elif [ "$basename_noext" = "general" ]; then
+                    scope="global"
+                else
+                    scope="global-$basename_noext"
+                fi
+
+                if "$BIN_DIR/meridian" index "$doc_type" "$dest" --scope "$scope" >/dev/null 2>&1; then
+                    log_info "Indexed $(basename "$f") -> scope $scope"
+                    seeded=$((seeded + 1))
+                else
+                    log_warn "Could not index $(basename "$f") (scope '$scope' may not exist yet — safe to ignore for files outside the bundled examples)"
+                fi
+            done
+        done
+    done
+
+    if [ "$seeded" -gt 0 ]; then
+        log_info "Seeded $seeded example file(s) into the knowledge base."
+    else
+        log_info "No example knowledge base files found to seed."
+    fi
+}
+
 setup_claude_code() {
     log_info "Setting up Claude Code..."
 
@@ -441,6 +519,8 @@ Options:
   INSTALL_DIR=/path     Custom installation directory (default: ~/.meridian)
   KNOWLEDGE_BASE_PATH=/path  Custom knowledge base path
   SKIP_MCP=1         Skip MCP client configuration
+  SEED_KB=1          Seed the example knowledge base without asking
+  SEED_KB=0          Skip seeding the example knowledge base without asking
   DRY_RUN=1          Show what would be done without executing
 
 Examples:
@@ -481,6 +561,7 @@ main() {
     echo "  Install directory:  $INSTALL_DIR"
     echo "  Knowledge base:    ${KNOWLEDGE_BASE_PATH:-auto}"
     echo "  Skip MCP setup:     ${SKIP_MCP:-no}"
+    echo "  Seed example KB:    ${SEED_KB:-ask}"
     echo "  Dry run:          ${DRY_RUN:-no}"
     echo
 
@@ -503,6 +584,7 @@ main() {
     install_meridian
     verify_install
     create_knowledge_base
+    seed_knowledge_base
 
     if [ "$SKIP_MCP" != "1" ]; then
         setup_mcp_clients

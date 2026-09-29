@@ -95,6 +95,7 @@ def _security_pattern(
     """Explicit security + audit pattern used by every tool handler."""
     c = _get_conn()
     log_id = next_sequential_id(c, "access_log", "al")
+    c.commit()
     params = extract_safe_params(params_dict)
     try:
         check_access(tool_name)

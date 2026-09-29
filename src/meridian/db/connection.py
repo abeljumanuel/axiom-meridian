@@ -4,6 +4,7 @@ import sqlite3
 from pathlib import Path
 
 from meridian.db.migrations import apply_pending_migrations
+from meridian.utils.id_generator import seed_id_counters
 
 REQUIRED_KB_DIRS = [
     "knowledge-base/global",
@@ -17,6 +18,7 @@ def get_connection(db_path: Path) -> sqlite3.Connection:
     """Open or create the SQLite database and configure pragmas."""
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
@@ -47,5 +49,17 @@ def initialize_db(db_path: Path) -> None:
             conn.commit()
 
         apply_pending_migrations(conn, db_path)
+
+        # Reconcile id_counters against the tables' real state on every startup,
+        # not only once via migration 002. seed_id_counters only ever raises a
+        # counter (ON CONFLICT ... MAX(next, excluded.next)), never lowers one,
+        # so this is a no-op when nothing drifted. Any row written through a
+        # path that bypassed next_rule_code()/next_sequential_id() — a bulk
+        # import, a restored backup, a future bug — would otherwise leave a
+        # counter permanently behind the table's actual peak with no other
+        # chance to self-heal, causing every later allocation for that name to
+        # collide with an existing row (UNIQUE constraint failed).
+        seed_id_counters(conn)
+        conn.commit()
     finally:
         conn.close()

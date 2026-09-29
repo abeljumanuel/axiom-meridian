@@ -35,6 +35,7 @@ TOOL_ACCESS_LEVELS: dict[str, str] = {
     "edit_proposal": "write",
     "reject_proposal": "write",
     "promote_rule": "write",
+    "create_project": "write",
     "generate_embeddings": "write",
     "generate_project_skills": "write",
 }

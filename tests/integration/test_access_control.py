@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import sqlite3
 from typing import Any
 
 import pytest
@@ -107,6 +109,41 @@ def test_access_log_records_all_invocations(tmp_server_db, monkeypatch):
     assert "query_rules" in tool_names
     assert "get_project_scope_resolution" in tool_names
     assert "list_pending_proposals" in tool_names
+
+
+def test_create_pending_proposal_exposes_update_target(tmp_server_db, monkeypatch):
+    """Regression: the MCP-exposed create_pending_proposal wrapper used to
+    omit target_id/target_type, even though the underlying
+    extraction.create_pending_proposal supports type="update" through them.
+    No caller outside the codebase could ever reach that parameter, so every
+    external type="update" call failed with "target_id is required for
+    UPDATE proposals" — the update-proposal feature was unreachable via MCP.
+    This exercises the actual server.py wrapper, not the internal function,
+    since that's the layer the previous tests bypassed."""
+    monkeypatch.setenv("MERIDIAN_ACCESS_LEVEL", "analyze")
+    tmp_server_db.execute(
+        "INSERT INTO rules (id, scope_id, code, text, category, severity) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("RN-GLOBAL-001", "global", "RN-GLOBAL-001", "Existing rule text.", "general", "medium"),
+    )
+    tmp_server_db.commit()
+
+    proposal_id = server.create_pending_proposal(
+        type="update",
+        proposed_text="Updated rule text.",
+        suggested_scope_id="global",
+        target_id="RN-GLOBAL-001",
+    )
+
+    row = tmp_server_db.execute(
+        "SELECT type, target_id, scope_id, proposed_text FROM pending_proposals WHERE id = ?",
+        (proposal_id,),
+    ).fetchone()
+    assert row == ("update", "RN-GLOBAL-001", "global", "Updated rule text.")
+
+    logs = _last_access_logs(tmp_server_db, 1)
+    assert logs[0]["tool_name"] == "create_pending_proposal"
+    assert logs[0]["result"] == "success"
     for log in logs:
         assert log["timestamp"] is not None
         assert log["result"] in ("success", "error")
@@ -134,3 +171,62 @@ def test_default_level_is_analyze(tmp_server_db, monkeypatch):
     result_approve = server.approve_proposal("prop-0001")
     parsed = json.loads(result_approve)
     assert parsed.get("error") == "ACCESS_DENIED"
+
+
+def test_index_then_scope_resolution_no_lock_regression(tmp_path, monkeypatch):
+    """Regression for the 2026-09-22 'database is locked' incident (ADR-006).
+
+    _security_pattern's next_sequential_id() call used to leave an
+    uncommitted write transaction open on the server's long-lived global
+    connection (server.conn) while impl_callable() opened a second,
+    independent connection (get_connection(get_db_path())) to write to the
+    same WAL-mode database file — index_rules_from_markdown writes to
+    rules/rule_history, get_project_scope_resolution writes to
+    project_scope_resolution. Without the early `c.commit()` in
+    _security_pattern and `busy_timeout` in get_connection, the second
+    writer failed immediately with sqlite3.OperationalError: database is
+    locked. Reproduces the exact reported sequence: a fresh knowledge base,
+    MERIDIAN_ACCESS_LEVEL=write, index_rules_from_markdown on the real
+    knowledge-base/global/java.md seed file with default_scope_id
+    'global-java', followed by get_project_scope_resolution in the same
+    session (same global connection, no restart in between).
+    """
+    kb_path = tmp_path / "kb"
+    kb_path.mkdir()
+    (kb_path / "knowledge-base" / "global").mkdir(parents=True)
+    (kb_path / "knowledge-base" / "projects").mkdir(parents=True)
+    (kb_path / "lessons" / "global").mkdir(parents=True)
+    (kb_path / "lessons" / "projects").mkdir(parents=True)
+    java_md = kb_path / "knowledge-base" / "global" / "java.md"
+    shutil.copy("knowledge-base/global/java.md", java_md)
+
+    monkeypatch.setenv("KNOWLEDGE_BASE_PATH", str(kb_path))
+    monkeypatch.setenv("MERIDIAN_ACCESS_LEVEL", "write")
+
+    from meridian.config import get_db_path
+
+    db_path = get_db_path()
+    initialize_db(db_path)
+
+    old_conn = server.conn
+    server.conn = get_connection(db_path)
+    old_transport = server.current_transport
+    server.current_transport = "stdio"
+    try:
+        try:
+            index_result = json.loads(
+                server.index_rules_from_markdown(str(java_md), "global-java")
+            )
+            scope_result = json.loads(
+                server.get_project_scope_resolution("project-project-example")
+            )
+        except sqlite3.OperationalError as exc:
+            pytest.fail(f"database lock regression reproduced: {exc}")
+
+        assert index_result["errors"] == []
+        assert index_result["created"] == 3
+        assert scope_result["project_id"] == "project-project-example"
+    finally:
+        server.conn.close()
+        server.conn = old_conn
+        server.current_transport = old_transport

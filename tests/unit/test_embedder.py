@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 
-import pytest
 
 from meridian.rag.embedder import generate_embedding, generate_embeddings_batch
 

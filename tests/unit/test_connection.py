@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 
 from meridian.db.connection import get_connection, initialize_db
+from meridian.utils.id_generator import next_rule_code, next_sequential_id
 
 
 EXPECTED_TABLES = [
@@ -116,5 +117,76 @@ def test_initialize_sets_user_version_to_latest_migration():
         try:
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             assert version >= 1
+        finally:
+            conn.close()
+
+
+def test_initialize_resyncs_code_counter_from_out_of_band_writes():
+    """Regression for the 2026-09-28 production incident (ADR-006): a row
+    inserted into ``rules`` by any path that bypasses ``next_rule_code()`` —
+    a bulk import, a restored backup, a since-fixed bug — leaves
+    ``id_counters`` unaware of it. Migration 002 only seeds counters once, so
+    without a repeated reconciliation, the very next ``next_rule_code()``
+    call reissues an already-used code and fails with
+    ``UNIQUE constraint failed: rules.code``. A server restart (a second
+    ``initialize_db()`` call against the same file) must repair this on its
+    own, regardless of how the drift happened."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        kb_path = Path(tmpdir)
+        (kb_path / "knowledge-base" / "global").mkdir(parents=True)
+        (kb_path / "knowledge-base" / "projects").mkdir(parents=True)
+        (kb_path / "lessons" / "global").mkdir(parents=True)
+        (kb_path / "lessons" / "projects").mkdir(parents=True)
+        db_path = kb_path / "test.db"
+        initialize_db(db_path)
+
+        conn = get_connection(db_path)
+        try:
+            conn.execute(
+                "INSERT INTO rules (id, scope_id, code, text, category, severity) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("RN-GLOBAL-031", "global", "RN-GLOBAL-031", "text", "cat", "high"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        initialize_db(db_path)  # simulate a server restart against drifted data
+
+        conn = get_connection(db_path)
+        try:
+            assert next_rule_code(conn, "global") == "RN-GLOBAL-032"
+        finally:
+            conn.close()
+
+
+def test_initialize_resyncs_generic_counter_from_out_of_band_writes():
+    """Same drift as above, for the generic (non-code) counters — e.g.
+    ``access_log`` — which ``next_sequential_id()`` allocates from."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        kb_path = Path(tmpdir)
+        (kb_path / "knowledge-base" / "global").mkdir(parents=True)
+        (kb_path / "knowledge-base" / "projects").mkdir(parents=True)
+        (kb_path / "lessons" / "global").mkdir(parents=True)
+        (kb_path / "lessons" / "projects").mkdir(parents=True)
+        db_path = kb_path / "test.db"
+        initialize_db(db_path)
+
+        conn = get_connection(db_path)
+        try:
+            conn.execute(
+                "INSERT INTO access_log (id, tool_name, access_level, result) "
+                "VALUES (?, ?, ?, ?)",
+                ("al-0054", "query_rules", "read", "success"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        initialize_db(db_path)  # simulate a server restart against drifted data
+
+        conn = get_connection(db_path)
+        try:
+            assert next_sequential_id(conn, "access_log", "al") == "al-0055"
         finally:
             conn.close()

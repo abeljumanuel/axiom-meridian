@@ -23,10 +23,29 @@ class ParsedBlock:
 
 
 # Matches ## RN-XXX-NNN or ## LL-XXX-NNN at the start of a line
-_BLOCK_HEADER_RE = re.compile(r"^## (RN|LL)-[A-Z]+-\d+", re.MULTILINE)
+_BLOCK_HEADER_RE = re.compile(r"^## (RN|LL)-[A-Z0-9]+-\d+", re.MULTILINE)
 # Matches **Campo:** valor (single-line fields)
 _FIELD_RE = re.compile(r"\*\*([^*]+):\*\*\s*(.+)")
-
+# Field labels from both RULE_TEMPLATE and LESSON_TEMPLATE (knowledge_templates.py) —
+# every label must be listed here so it can act as a stop condition when scanning
+# the multi-line "Regla"/"Qué pasó" field; an incomplete set silently swallows the
+# fields that follow it into that field's text (ADR-006).
+_KNOWN_FIELD_NAMES = {
+    "Scope",
+    "Categoría",
+    "Severidad",
+    "Aplica a",
+    "Tags",
+    "Fuente",
+    "Proyecto",
+    "Fecha",
+    "Severidad del impacto",
+    "Área afectada",
+    "Impacto",
+    "Causa raíz",
+    "Resolución",
+    "Originó regla",
+}
 
 def _extract_block_bytes(
     text: str, raw_bytes: bytes, char_start: int, char_end: int
@@ -92,7 +111,8 @@ def _parse_block_fields(block_text: str) -> dict:
                 i_line += 1
                 while i_line < len(lines):
                     next_line = lines[i_line]
-                    if _FIELD_RE.match(next_line):
+                    next_match = _FIELD_RE.match(next_line)
+                    if next_match and next_match.group(1).strip() in _KNOWN_FIELD_NAMES:
                         i_line -= 1
                         break
                     rule_lines.append(next_line)
@@ -137,6 +157,12 @@ def parse(filepath: str) -> tuple[list[ParsedBlock], list[str]]:
     warnings: list[str] = []
 
     matches = list(_BLOCK_HEADER_RE.finditer(text))
+
+    if not matches and text.strip():
+        warnings.append(
+            f"{filepath}: no atomic blocks found (expected a header matching "
+            f"'## RN-<TECH>-<NNN>' or '## LL-<TECH>-<NNN>' at the start of a line)"
+        )
 
     for i, match in enumerate(matches):
         char_start = match.start()

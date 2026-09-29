@@ -1,13 +1,11 @@
 """Unit tests for security utilities."""
 
 import json
-import os
 
 import pytest
 
 from meridian.utils.security import (
     AccessDeniedError,
-    TOOL_ACCESS_LEVELS,
     check_access,
     extract_safe_params,
     generate_session_token,

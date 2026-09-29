@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from meridian import server
+from meridian.utils.security import TOOL_ACCESS_LEVELS
 
 # Expected signatures per PRD v1.3 section 5
 EXPECTED: dict[str, dict[str, Any]] = {
@@ -120,6 +121,8 @@ EXPECTED: dict[str, dict[str, Any]] = {
         "type": (str, inspect.Parameter.empty),
         "proposed_text": (str, inspect.Parameter.empty),
         "suggested_scope_id": (str, inspect.Parameter.empty),
+        "target_id": (str | None, None),
+        "target_type": (str | None, None),
         "suggested_attributes": (str | None, None),
         "source_type": (str | None, None),
         "source_ref": (str | None, None),
@@ -197,6 +200,16 @@ def test_all_tools_registered() -> None:
         assert name in registered, f"Tool {name} is not registered with FastMCP"
 
 
+def test_every_registered_tool_has_an_access_level() -> None:
+    """Regression for the create_project gap (RN-GLOBAL-033): a tool absent
+    from TOOL_ACCESS_LEVELS is silently allowed at any access level —
+    check_access() treats an unmapped name as forward-compatible, not denied
+    (utils/security.py). Every tool covered by the signature contract must
+    also appear in the access-level map, or it runs ungated."""
+    missing = set(EXPECTED) - set(TOOL_ACCESS_LEVELS)
+    assert not missing, f"Tools with no TOOL_ACCESS_LEVELS entry (run ungated): {missing}"
+
+
 def test_no_extra_tools_registered() -> None:
     """Only expected tools should be registered (no stale / debug tools)."""
     import asyncio
@@ -212,3 +225,32 @@ def test_no_extra_tools_registered() -> None:
         f"Extra: {registered - expected_set}, "
         f"Missing: {expected_set - registered}"
     )
+
+
+def test_every_tool_and_parameter_is_documented() -> None:
+    """Regression for the 2026-09-22 Inspector finding: 25 of 26 tools had
+    description=None because @mcp.tool() reads the docstring of the
+    decorated wrapper in server.py, not of the implementation it delegates
+    to in tools/*.py — wrappers had no docstring of their own, and their
+    parameters had no Field(description=...) either, so a human using MCP
+    Inspector saw only a name, a type, and a required/optional flag per
+    parameter. This must never regress silently for a newly added tool or
+    parameter."""
+    import asyncio
+
+    async def _list():
+        return await server.mcp.list_tools()
+
+    tools = asyncio.run(_list())
+    assert tools, "No tools registered — check server.py imports"
+
+    undocumented_tools = [t.name for t in tools if not (t.description or "").strip()]
+    assert not undocumented_tools, f"Tools with no description: {undocumented_tools}"
+
+    undocumented_params: dict[str, list[str]] = {}
+    for t in tools:
+        properties = (t.parameters or {}).get("properties", {})
+        missing = [name for name, schema in properties.items() if not schema.get("description")]
+        if missing:
+            undocumented_params[t.name] = missing
+    assert not undocumented_params, f"Tool parameters with no description: {undocumented_params}"

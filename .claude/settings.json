@@ -1,0 +1,18 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/check-openspec-before-pr.sh",
+            "if": "Bash(gh pr create*)",
+            "timeout": 15,
+            "statusMessage": "Checking for an openspec change before opening the PR..."
+          }
+        ]
+      }
+    ]
+  }
+}

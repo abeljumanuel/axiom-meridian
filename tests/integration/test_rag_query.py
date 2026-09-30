@@ -153,6 +153,7 @@ def test_approve_create_proposal_embeds_new_rule(tmp_kb):
     result = approve_proposal("prop-0001")
     code = result["code"]
 
+    assert result["embedded"] is True
     row = conn.execute(
         "SELECT embedding_id FROM rules WHERE code = ?", (code,)
     ).fetchone()
@@ -198,7 +199,8 @@ def test_approve_update_proposal_refreshes_vector_store_entry(tmp_kb):
         ),
     )
     conn.commit()
-    approve_proposal("prop-0002")
+    result = approve_proposal("prop-0002")
+    assert result["embedded"] is True
 
     from meridian.rag import embedder
 

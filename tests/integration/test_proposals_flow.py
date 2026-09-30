@@ -437,3 +437,93 @@ def test_approve_create_proposal_survives_embedding_failure(tmp_kb, monkeypatch)
         "SELECT embedding_id FROM rules WHERE code = ?", (result["code"],)
     ).fetchone()
     assert row[0] is None
+    assert result["embedded"] is False
+
+
+def test_approve_update_proposal_survives_embedding_failure(tmp_kb, monkeypatch):
+    """Same as above, for the UPDATE path."""
+    kb_path, conn = tmp_kb
+    dest_file = kb_path / "knowledge-base" / "global" / "java.md"
+    dest_file.write_text("## RN-JAVA-001\n**Scope:** global-java\n**Regla:** old text.\n")
+    conn.execute(
+        "INSERT INTO rules (id, scope_id, code, text, category, severity, "
+        "file_path, file_offset, byte_length) VALUES "
+        "('RN-JAVA-001', 'global-java', 'RN-JAVA-001', 'old text.', "
+        "'general', 'medium', ?, 0, ?)",
+        (str(dest_file), len(dest_file.read_text().encode())),
+    )
+    conn.commit()
+
+    from meridian.rag import vector_store
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("chromadb unavailable")
+
+    monkeypatch.setattr(vector_store, "upsert_rule", boom)
+
+    conn.execute(
+        "INSERT INTO pending_proposals (id, type, target_id, proposed_text, "
+        "metadata, status) VALUES ('prop-0002', 'update', 'RN-JAVA-001', "
+        "'new text.', ?, 'pending')",
+        (json.dumps({"tags": ["x"]}),),
+    )
+    conn.commit()
+
+    result = approve_proposal("prop-0002")  # must not raise
+
+    assert result["embedded"] is False
+    row = conn.execute(
+        "SELECT text, embedding_id FROM rules WHERE id = 'RN-JAVA-001'"
+    ).fetchone()
+    assert row[0] == "new text."  # the update itself still went through
+    assert row[1] is None
+
+
+@pytest.mark.parametrize("separator", ["\n\n", "\n"])
+def test_update_preserves_original_block_separator(tmp_kb, separator):
+    """Regression: _splice_atomic_block used to always collapse the
+    separator before the next block to a single newline, silently
+    changing formatting the user didn't ask to change (e.g. removing a
+    blank line between blocks)."""
+    kb_path, conn = tmp_kb
+    dest_file = kb_path / "knowledge-base" / "global" / "java.md"
+
+    block_a = _atomic_rule_block("RN-JAVA-001", "Old text.")
+    block_b = _atomic_rule_block("RN-JAVA-002", "Unrelated later rule.")
+    # _atomic_rule_block already ends in its own "\n" — strip it so
+    # `separator` alone controls the exact gap being tested.
+    content = (block_a.rstrip("\n") + separator + block_b).encode("utf-8")
+    dest_file.write_bytes(content)
+
+    seed_blocks = {b.code: b for b in atomic_parse(str(dest_file))[0]}
+    for code, text in (("RN-JAVA-001", "Old text."), ("RN-JAVA-002", "Unrelated later rule.")):
+        offset, length = seed_blocks[code].file_offset, seed_blocks[code].byte_length
+        conn.execute(
+            "INSERT INTO rules (id, scope_id, code, text, category, severity, "
+            "file_path, file_offset, byte_length) "
+            "VALUES (?, 'global-java', ?, ?, 'exceptions', 'high', ?, ?, ?)",
+            (code, code, text, str(dest_file), offset, length),
+        )
+    conn.commit()
+
+    conn.execute(
+        "INSERT INTO pending_proposals (id, type, target_id, proposed_text, "
+        "metadata, status) VALUES ('prop-0001', 'update', 'RN-JAVA-001', "
+        "'New text, same length-ish.', '{}', 'pending')"
+    )
+    conn.commit()
+    approve_proposal("prop-0001")
+
+    raw = dest_file.read_bytes()
+    idx = raw.find(b"## RN-JAVA-002")
+    # Count the newlines immediately preceding the second header.
+    j = idx
+    count = 0
+    while raw[j - 1 : j] == b"\n":
+        count += 1
+        j -= 1
+    assert count == len(separator)
+
+    blocks, warnings = atomic_parse(str(dest_file))
+    assert warnings == []
+    assert {b.code for b in blocks} == {"RN-JAVA-001", "RN-JAVA-002"}

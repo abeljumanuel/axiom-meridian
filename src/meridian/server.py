@@ -14,6 +14,7 @@ from pydantic import Field
 
 from meridian.config import get_db_path
 from meridian.db.connection import get_connection, initialize_db
+from meridian.rag import embedder
 from meridian.tools import (
     audit_flows,
     extraction,
@@ -969,6 +970,7 @@ def run_stdio() -> None:
     global current_transport
     current_transport = "stdio"
     init_db()
+    embedder.warm_up_in_background()
     mcp.run(transport="stdio")
 
 
@@ -976,6 +978,7 @@ def run_http(port: int = 8080) -> None:
     global current_transport
     current_transport = "http"
     init_db()
+    embedder.warm_up_in_background()
 
     session_token = generate_session_token()
     print(f"Meridian HTTP/SSE server started on 127.0.0.1:{port}")

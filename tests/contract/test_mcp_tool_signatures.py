@@ -89,6 +89,7 @@ EXPECTED: dict[str, dict[str, Any]] = {
     "get_project_scope_resolution": {
         "project_id": (str, inspect.Parameter.empty),
     },
+    "get_server_info": {},
     "get_rule_audit_log": {
         "project_id": (str | None, None),
         "scope_id": (str | None, None),

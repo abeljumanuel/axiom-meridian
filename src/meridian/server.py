@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -19,6 +20,7 @@ from meridian.tools import (
     knowledge_consumption,
     knowledge_management,
     knowledge_templates,
+    server_info,
 )
 from meridian.utils.id_generator import next_sequential_id
 from meridian.utils.security import (
@@ -30,6 +32,7 @@ from meridian.utils.security import (
     log_tool_access,
 )
 from meridian.utils.skill_generator import generate_project_skills as _generate_project_skills_impl
+from meridian.utils.version_info import get_version_info
 
 # ---------------------------------------------------------------------------
 # Global state
@@ -37,6 +40,12 @@ from meridian.utils.skill_generator import generate_project_skills as _generate_
 
 mcp = FastMCP("meridian")
 conn: sqlite3.Connection | None = None
+
+# Captured once at import time (= effectively at process start) so
+# get_server_info can tell whether the code on disk has changed since —
+# see server_info.build_server_info_response / Hallazgo 7.
+_STARTUP_VERSION_INFO = get_version_info()
+_STARTUP_TIME = datetime.now(timezone.utc).isoformat()
 current_transport: str = "stdio"
 
 
@@ -634,6 +643,30 @@ def get_project_scope_resolution(
         return knowledge_consumption.get_project_scope_resolution(project_id)
 
     return _security_pattern(tool_name, params, project_id, _impl)
+
+
+@mcp.tool()
+def get_server_info() -> str:
+    """Report this running server process's version/commit, and whether
+    the code on disk has changed since this process started — Python
+    doesn't hot-reload, so an editable install that was `git pull`ed
+    without restarting the server keeps serving the old code with no
+    other visible sign of it (Hallazgo 7).
+
+    Access level: read.
+    Returns: JSON with version, the commit captured at server startup,
+    a freshly-read commit as of this call, and a `stale` flag (true only
+    when both commits are known and differ) with a restart note.
+    """
+    tool_name = "get_server_info"
+    params: dict = {}
+
+    def _impl() -> dict:
+        return server_info.build_server_info_response(
+            _STARTUP_VERSION_INFO, get_version_info(), _STARTUP_TIME
+        )
+
+    return _security_pattern(tool_name, params, None, _impl)
 
 
 @mcp.tool()

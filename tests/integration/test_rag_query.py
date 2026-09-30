@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 
 import pytest
 
 from meridian.db.connection import get_connection, initialize_db
+from meridian.rag import vector_store
 from meridian.rag.vector_store import reset_client
-from meridian.tools.knowledge_consumption import query_rules
+from meridian.tools.knowledge_consumption import query_lessons, query_rules
 from meridian.tools.knowledge_management import (
+    approve_proposal,
     generate_embeddings,
     index_rules_from_markdown,
 )
@@ -118,3 +121,144 @@ def test_rag_and_sql_same_results_for_exact_filter(tmp_kb):
     rag_codes = {r["code"] for r in rag_data}
 
     assert sql_codes == rag_codes
+
+
+def test_approve_create_proposal_embeds_new_rule(tmp_kb):
+    """Regression (Hallazgo 5): a newly-approved rule must be findable via
+    semantic search without a separate generate_embeddings call —
+    previously embedding_id stayed NULL until someone ran it manually."""
+    kb_path, conn = tmp_kb
+    dest_file = kb_path / "knowledge-base" / "global" / "java.md"
+    dest_file.write_text("")
+
+    conn.execute(
+        """
+        INSERT INTO pending_proposals
+        (id, type, scope_id, proposed_text, metadata, source_type)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "prop-0001",
+            "rule",
+            "global-java",
+            "Use records for immutable DTOs instead of plain classes.",
+            json.dumps(
+                {"category": "style", "severity": "medium", "tags": ["records", "dto"]}
+            ),
+            "manual",
+        ),
+    )
+    conn.commit()
+
+    result = approve_proposal("prop-0001")
+    code = result["code"]
+
+    row = conn.execute(
+        "SELECT embedding_id FROM rules WHERE code = ?", (code,)
+    ).fetchone()
+    assert row[0] is not None
+
+    search_result = query_rules("global-java", query_text="immutable DTO records")
+    codes = [r["code"] for r in json.loads(search_result)]
+    assert code in codes
+
+
+def test_approve_update_proposal_refreshes_vector_store_entry(tmp_kb):
+    """Regression (Hallazgo 5): approving an UPDATE must replace the
+    vector-store entry under the same id, not leave the pre-update
+    text/tags stale — previously embedding_id reset to NULL but nothing
+    ever re-upserted ChromaDB's copy."""
+    kb_path, conn = tmp_kb
+    shutil.copy(
+        "knowledge-base/global/java.md",
+        kb_path / "knowledge-base" / "global" / "java.md",
+    )
+    filepath = str(kb_path / "knowledge-base" / "global" / "java.md")
+    index_rules_from_markdown(filepath, default_scope_id="global-java", mode="atomic")
+    generate_embeddings(conn)
+
+    # RN-JAVA-003 is about constructor injection / "cdi" tag; update it to
+    # something unrelated, with a different tag.
+    conn.execute(
+        """
+        INSERT INTO pending_proposals
+        (id, type, target_id, proposed_text, metadata, status)
+        VALUES (?, 'update', 'RN-JAVA-003', ?, ?, 'pending')
+        """,
+        (
+            "prop-0002",
+            "Always validate configuration properties at startup using @ConfigMapping.",
+            json.dumps(
+                {
+                    "category": "configuration",
+                    "severity": "high",
+                    "tags": ["config-mapping", "startup-validation"],
+                }
+            ),
+        ),
+    )
+    conn.commit()
+    approve_proposal("prop-0002")
+
+    from meridian.rag import embedder
+
+    hits = vector_store.search_rules(
+        embedder.generate_embedding("validate configuration properties startup"),
+        ["global-java"],
+        top_k=5,
+    )
+    hit = next(h for h in hits if h["id"] == "RN-JAVA-003")
+    assert "config-mapping" in hit["metadata"]["tags"]
+    assert "cdi" not in hit["metadata"]["tags"]
+    assert "constructor" not in hit["text"].lower()
+
+
+def test_query_rules_warns_about_pending_embeddings(tmp_kb, caplog):
+    """Regression (Hallazgo 5b): an active un-embedded rule in scope during
+    a semantic search must be logged, not silently omitted with no signal
+    at all."""
+    kb_path, conn = tmp_kb
+    shutil.copy(
+        "knowledge-base/global/java.md",
+        kb_path / "knowledge-base" / "global" / "java.md",
+    )
+    filepath = str(kb_path / "knowledge-base" / "global" / "java.md")
+    index_rules_from_markdown(filepath, default_scope_id="global-java", mode="atomic")
+    generate_embeddings(conn)  # RN-JAVA-001/002/003 now embedded
+
+    # Simulate a rule that exists (e.g. approved) but was never embedded.
+    conn.execute(
+        "INSERT INTO rules (id, scope_id, code, text, category, severity) "
+        "VALUES ('RN-JAVA-004', 'global-java', 'RN-JAVA-004', 'text', 'general', 'medium')"
+    )
+    conn.commit()
+
+    with caplog.at_level(logging.WARNING):
+        query_rules("global-java", query_text="logging")
+
+    assert any("lack an embedding" in rec.message for rec in caplog.records)
+    assert any("1 active row" in rec.message for rec in caplog.records)
+
+
+def test_query_lessons_warns_about_pending_embeddings(tmp_kb, caplog):
+    """Same as above, for query_lessons."""
+    kb_path, conn = tmp_kb
+    conn.execute(
+        "INSERT INTO lessons (id, scope_id, code, what_happened, severity) "
+        "VALUES ('LL-JAVA-001', 'global-java', 'LL-JAVA-001', 'something happened', 'medium')"
+    )
+    conn.commit()
+    # Force the semantic path: chromadb_available() needs at least one
+    # document somewhere, regardless of collection.
+    from meridian.rag import embedder
+
+    vector_store.upsert_rule(
+        "RN-SENTINEL", "sentinel", embedder.generate_embedding("sentinel"),
+        {"scope_id": "global", "category": "x", "severity": "low", "applies_to": "", "tags": "[]"},
+    )
+
+    with caplog.at_level(logging.WARNING):
+        query_lessons("global-java", query_text="something")
+
+    assert any("lack an embedding" in rec.message for rec in caplog.records)
+    assert any("1 active row" in rec.message for rec in caplog.records)

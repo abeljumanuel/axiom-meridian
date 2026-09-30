@@ -273,6 +273,12 @@ seed_knowledge_base() {
                 local basename_noext
                 basename_noext="$(basename "$f" .md)"
                 local dest="$KB_PATH/$src_dir/$sub/$(basename "$f")"
+
+                if [ -e "$dest" ]; then
+                    log_warn "Skipping $(basename "$f") — $dest already exists (not overwriting your data). Remove or rename it first if you really want to reseed this example."
+                    continue
+                fi
+
                 cp "$f" "$dest"
 
                 # Mirrors _scope_to_file_path's own convention: general.md
@@ -310,9 +316,30 @@ seed_knowledge_base() {
 setup_claude_code() {
     log_info "Setting up Claude Code..."
 
-    # Check if already configured
-    if claude mcp list 2>/dev/null | grep -q '"meridian"'; then
+    # Check if already configured. `claude mcp list` prints plain
+    # "name: command - status" lines, not JSON — matching '"meridian"'
+    # (quoted) never matches, silently defeating this check (it used to
+    # fall through to `claude mcp add`, which fails with exit 1 for a
+    # name that already exists, printing a confusing "Could not add"
+    # warning on every re-run even when Claude Code was already working).
+    local existing_line
+    existing_line="$(claude mcp list 2>/dev/null | grep '^meridian:')"
+    if [ -n "$existing_line" ]; then
         log_warn "Meridian already configured in Claude Code. Skipping."
+        case "$existing_line" in
+            # Match on the venv's bin/ directory, not the exact command —
+            # an existing registration may invoke `python -m meridian mcp`
+            # from the same venv instead of the native `meridian` entry
+            # point this installer itself uses; either is "the same venv".
+            *"$BIN_DIR"*) ;;
+            *)
+                log_warn "Note: the configured command doesn't match this install's venv ($BIN_DIR) — Claude Code may still be pointed at a different Meridian install:"
+                echo "  $existing_line"
+                echo "  To switch it to this one:"
+                echo "    claude mcp remove -s user meridian"
+                echo "    claude mcp add -s user -e KNOWLEDGE_BASE_PATH=\"$KNOWLEDGE_BASE_PATH\" -e MERIDIAN_ACCESS_LEVEL=write -- meridian \"$BIN_DIR/meridian\" mcp"
+                ;;
+        esac
         return
     fi
 
@@ -531,7 +558,7 @@ Examples:
   INSTALL_DIR=/opt/meridian KNOWLEDGE_BASE_PATH=/data/kb bash install.sh
 
   # Remote installation
-  curl -fsSL https://raw.githubusercontent.com/axiom-juma/meridian/main/scripts/install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/abeljumanuel/axiom-meridian/main/scripts/install.sh | bash
 
   # Dry run (show what would happen)
   DRY_RUN=1 bash install.sh

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from typing import Any
 
@@ -16,6 +17,8 @@ from meridian.utils.scope_resolver import (
     resolve_scope_hierarchy,
 )
 from meridian.utils.serializers import serialize
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_full_text(
@@ -46,6 +49,31 @@ def _resolve_full_text(
         else:
             resolved.append({"text": None, "error": "STALE_INDEX"})
     return resolved
+
+
+def _warn_if_pending_embeddings(
+    conn: sqlite3.Connection, table: str, scopes: list[str]
+) -> None:
+    """Log a warning naming how many active rows in these scopes still
+    have embedding_id IS NULL — semantic (query_text) search silently
+    can't return them (they were never upserted into the vector store),
+    so this is the only signal an operator gets short of grepping SQL."""
+    if not scopes:
+        return
+    placeholders = ",".join("?" for _ in scopes)
+    count = conn.execute(
+        f"SELECT COUNT(*) FROM {table} "  # noqa: S608
+        f"WHERE scope_id IN ({placeholders}) AND status = 'active' "
+        "AND embedding_id IS NULL",
+        scopes,
+    ).fetchone()[0]
+    if count:
+        logger.warning(
+            "%d active row(s) in %s lack an embedding and are invisible to "
+            "this semantic search (scopes: %s) — run generate_embeddings "
+            "to backfill them",
+            count, table, scopes,
+        )
 
 
 def _normalize_rag_rule(candidate: dict) -> dict[str, Any]:
@@ -123,6 +151,7 @@ def query_rules(
         attributes = load_scope_attributes(conn, project_id)
 
         if query_text and vector_store.chromadb_available():
+            _warn_if_pending_embeddings(conn, "rules", scopes)
             query_embedding = embedder.generate_embedding(query_text)
             candidates = vector_store.search_rules(
                 query_embedding, scopes, top_k=20
@@ -238,6 +267,7 @@ def query_lessons(
         scopes = resolve_scope_hierarchy(conn, project_id)
 
         if query_text and vector_store.chromadb_available():
+            _warn_if_pending_embeddings(conn, "lessons", scopes)
             query_embedding = embedder.generate_embedding(query_text)
             candidates = vector_store.search_lessons(
                 query_embedding, scopes, top_k=20

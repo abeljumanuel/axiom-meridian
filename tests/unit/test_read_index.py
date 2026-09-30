@@ -12,6 +12,7 @@ from meridian.utils.read_index import (
     check_files_fresh,
     normalize_tag_list,
     refresh_indexed_file,
+    shift_offsets_after,
     sync_tags,
     write_block,
 )
@@ -274,5 +275,120 @@ def test_refresh_indexed_file_used_by_reindexing():
 
         result = check_files_fresh(conn, [str(target)])
         assert result == {str(target): True}
+    finally:
+        conn.close()
+
+
+def test_shift_offsets_after_shifts_only_later_rows_in_same_file():
+    """Regression: approve_proposal's UPDATE path used to change a block's
+    byte length without adjusting later blocks' cached file_offset in the
+    same file, corrupting the file on the next write to one of them
+    (reported incident — java.md, prop-0013/prop-0014)."""
+    conn, kb_path = _temp_db()
+    try:
+        target = kb_path / "note.md"
+        other = kb_path / "other.md"
+
+        # r1 (the edited row) at offset 0; r2/r3 later in the same file;
+        # r4 at offset 0 in a DIFFERENT file (must never move);
+        # r5 in the same file but BEFORE the edit (must never move).
+        rows = [
+            ("r1", "RN-A-001", str(target), 0, 100),
+            ("r2", "RN-A-002", str(target), 100, 50),
+            ("r3", "RN-A-003", str(target), 150, 30),
+            ("r4", "RN-B-001", str(other), 100, 50),
+            ("r5", "RN-A-000", str(target), -10, 10),  # sentinel "before edit"
+        ]
+        for rid, code, fp, off, length in rows:
+            conn.execute(
+                "INSERT INTO rules (id, scope_id, code, text, category, "
+                "severity, file_path, file_offset, byte_length) "
+                "VALUES (?, 'global', ?, 'text', 'general', 'medium', ?, ?, ?)",
+                (rid, code, fp, off, length),
+            )
+
+        conn.execute(
+            "INSERT INTO lessons (id, scope_id, code, what_happened, "
+            "file_path, file_offset, byte_length) "
+            "VALUES ('l1', 'global', 'LL-A-001', 'text', ?, 200, 40)",
+            (str(target),),
+        )
+        conn.commit()
+
+        # r1 grew from 100 to 130 bytes (delta +30), edited_offset=0.
+        shift_offsets_after(conn, str(target), 0, 30)
+        conn.commit()
+
+        offsets = {
+            rid: conn.execute(
+                "SELECT file_offset FROM rules WHERE id = ?", (rid,)
+            ).fetchone()[0]
+            for rid in ("r1", "r2", "r3", "r4", "r5")
+        }
+        assert offsets["r1"] == 0  # the edited row itself: untouched here
+        assert offsets["r2"] == 130  # 100 + 30
+        assert offsets["r3"] == 180  # 150 + 30
+        assert offsets["r4"] == 100  # different file: untouched
+        assert offsets["r5"] == -10  # before the edit: untouched
+
+        lesson_offset = conn.execute(
+            "SELECT file_offset FROM lessons WHERE id = 'l1'"
+        ).fetchone()[0]
+        assert lesson_offset == 230  # 200 + 30 — lessons table shifts too
+    finally:
+        conn.close()
+
+
+def test_shift_offsets_after_handles_negative_delta():
+    conn, kb_path = _temp_db()
+    try:
+        target = kb_path / "note.md"
+        conn.execute(
+            "INSERT INTO rules (id, scope_id, code, text, category, "
+            "severity, file_path, file_offset, byte_length) "
+            "VALUES ('r1', 'global', 'RN-A-001', 'text', 'general', "
+            "'medium', ?, 0, 100)",
+            (str(target),),
+        )
+        conn.execute(
+            "INSERT INTO rules (id, scope_id, code, text, category, "
+            "severity, file_path, file_offset, byte_length) "
+            "VALUES ('r2', 'global', 'RN-A-002', 'text', 'general', "
+            "'medium', ?, 100, 50)",
+            (str(target),),
+        )
+        conn.commit()
+
+        shift_offsets_after(conn, str(target), 0, -40)  # block shrank
+        conn.commit()
+
+        offset = conn.execute(
+            "SELECT file_offset FROM rules WHERE id = 'r2'"
+        ).fetchone()[0]
+        assert offset == 60  # 100 - 40
+    finally:
+        conn.close()
+
+
+def test_shift_offsets_after_noop_on_zero_delta():
+    conn, kb_path = _temp_db()
+    try:
+        target = kb_path / "note.md"
+        conn.execute(
+            "INSERT INTO rules (id, scope_id, code, text, category, "
+            "severity, file_path, file_offset, byte_length) "
+            "VALUES ('r1', 'global', 'RN-A-001', 'text', 'general', "
+            "'medium', ?, 100, 50)",
+            (str(target),),
+        )
+        conn.commit()
+
+        shift_offsets_after(conn, str(target), 0, 0)
+        conn.commit()
+
+        offset = conn.execute(
+            "SELECT file_offset FROM rules WHERE id = 'r1'"
+        ).fetchone()[0]
+        assert offset == 100  # unchanged
     finally:
         conn.close()

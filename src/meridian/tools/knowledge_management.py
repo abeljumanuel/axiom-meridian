@@ -22,7 +22,12 @@ from meridian.utils.id_generator import (
     next_sequential_id,
 )
 from meridian.utils.privacy import strip_private_tags
-from meridian.utils.read_index import refresh_indexed_file, sync_tags, write_block
+from meridian.utils.read_index import (
+    refresh_indexed_file,
+    shift_offsets_after,
+    sync_tags,
+    write_block,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -660,10 +665,22 @@ def _splice_atomic_block(
     Writes through :func:`write_block` so ``indexed_files`` never drifts from
     what's on disk. Returns the replaced block's original text and the new
     block's byte length.
+
+    ``old_length`` spans up to the *next* header (or EOF), which — per
+    atomic_parser's own convention — includes whatever blank-line
+    separator followed the old block. ``new_block_text`` (from
+    ``_build_rule_atomic_block``/``_build_lesson_atomic_block``) has no
+    trailing newline of its own, so without re-adding one here the next
+    header ends up glued directly onto this block's last line, silently
+    corrupting the file's structure (confirmed: this reproduces on a
+    single UPDATE approval, not just a second one — the reported
+    incident's first symptom, "RN-086 ... sigue directamente ## RN-092").
     """
     raw_bytes = dest_path.read_bytes()
     old_block_text = raw_bytes[old_offset : old_offset + old_length].decode("utf-8")
     new_block_bytes = new_block_text.encode("utf-8")
+    if not new_block_bytes.endswith(b"\n"):
+        new_block_bytes += b"\n"
     new_bytes = raw_bytes[:old_offset] + new_block_bytes + raw_bytes[old_offset + old_length :]
     write_block(conn, dest_path, new_bytes)
     return old_block_text, len(new_block_bytes)
@@ -773,6 +790,7 @@ def _approve_update_proposal(
         old_block_text, new_length = _splice_atomic_block(
             conn, dest_path, old_offset, old_length, block_text
         )
+        shift_offsets_after(conn, dest_path, old_offset, new_length - old_length)
 
         if target_table == "rules":
             _update_rule_row(conn, target_id, target, proposed_text, metadata, old_offset, new_length)
@@ -1242,7 +1260,12 @@ def promote_rule(rule_id: str, new_scope_id: str) -> dict:
         file_offset = rule.get("file_offset")
         byte_length = rule.get("byte_length")
         if file_path and file_offset is not None and byte_length is not None:
-            _mark_deprecated_in_md(conn, file_path, file_offset, byte_length)
+            new_length = _mark_deprecated_in_md(conn, file_path, file_offset, byte_length)
+            if new_length is not None and new_length != byte_length:
+                conn.execute(
+                    "UPDATE rules SET byte_length = ? WHERE id = ?",
+                    (new_length, rule_id),
+                )
 
         hist_id = next_sequential_id(conn, "rule_history", "rh")
         conn.execute(
@@ -1404,11 +1427,19 @@ def generate_embeddings(
 
 def _mark_deprecated_in_md(
     conn: sqlite3.Connection, file_path: str, file_offset: int, byte_length: int
-) -> None:
-    """Best-effort deprecation marker in the source .md file."""
+) -> int | None:
+    """Best-effort deprecation marker in the source .md file.
+
+    Inserting the "**Status:** deprecated" line grows the block, so this
+    shifts every later block's cached offset in the same file (see
+    write_block's docstring). Returns the deprecated block's new
+    byte_length so the caller can keep its own row's metadata accurate too
+    — this function doesn't update the rules/lessons row itself, since it
+    doesn't know which table/id it belongs to.
+    """
     path = Path(file_path)
     if not path.exists():
-        return
+        return None
 
     raw_bytes = path.read_bytes()
     block_bytes = raw_bytes[file_offset : file_offset + byte_length]
@@ -1426,6 +1457,10 @@ def _mark_deprecated_in_md(
             + raw_bytes[file_offset + byte_length :]
         )
         write_block(conn, path, new_raw)
+        new_length = len(new_block_bytes)
+        shift_offsets_after(conn, path, file_offset, new_length - byte_length)
+        return new_length
+    return None
 
 
 # ---------------------------------------------------------------------------

@@ -83,3 +83,23 @@ def generate_embedding(text: str) -> list[float]:
 def generate_embeddings_batch(texts: list[str]) -> list[list[float]]:
     """Generate embeddings for multiple texts in one batch."""
     return _embedder.encode(texts)
+
+
+def warm_up_in_background() -> None:
+    """Kick off the lazy model load in a background thread, non-blocking.
+
+    Without this, the first real embedding request after a cold server
+    start — a semantic (query_text) search, or approve_proposal's
+    post-commit embed step — pays the full multi-second `import torch` +
+    `import sentence_transformers` + model-instantiation cost inline
+    (measured ~5-7s with the model already cached locally, more on a
+    cold HF Hub cache), which can approach or exceed an MCP client's own
+    connection/call timeout. `_Embedder._load()`'s existing lock makes
+    this safe to call alongside real requests: a concurrent caller just
+    blocks on the same in-progress load instead of starting a second one
+    — this never changes the *total* cost, only how early it starts.
+    """
+    thread = threading.Thread(
+        target=_embedder._load, daemon=True, name="meridian-embedder-warmup"
+    )
+    thread.start()

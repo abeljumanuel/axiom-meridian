@@ -675,12 +675,16 @@ def _splice_atomic_block(
     corrupting the file's structure (confirmed: this reproduces on a
     single UPDATE approval, not just a second one — the reported
     incident's first symptom, "RN-086 ... sigue directamente ## RN-092").
+
+    The trailing-newline *count* is preserved from the old block rather
+    than fixed at 1, so an update doesn't incidentally collapse a
+    blank-line separator (two newlines) down to none of the user's
+    choosing — purely cosmetic, but not this function's call to change.
     """
     raw_bytes = dest_path.read_bytes()
     old_block_text = raw_bytes[old_offset : old_offset + old_length].decode("utf-8")
-    new_block_bytes = new_block_text.encode("utf-8")
-    if not new_block_bytes.endswith(b"\n"):
-        new_block_bytes += b"\n"
+    trailing_newlines = max(len(old_block_text) - len(old_block_text.rstrip("\n")), 1)
+    new_block_bytes = new_block_text.encode("utf-8").rstrip(b"\n") + b"\n" * trailing_newlines
     new_bytes = raw_bytes[:old_offset] + new_block_bytes + raw_bytes[old_offset + old_length :]
     write_block(conn, dest_path, new_bytes)
     return old_block_text, len(new_block_bytes)
@@ -826,13 +830,13 @@ def _approve_update_proposal(
         raise
 
     if target_table == "rules":
-        _embed_and_upsert_after_approve(
+        embedded = _embed_and_upsert_after_approve(
             conn, table="rules", kind="rule", code=target_id, text_column="text",
             select_columns="code, text, category, severity, applies_to, tags",
             build_metadata=_rule_embedding_metadata, upsert_fn=vector_store.upsert_rule,
         )
     else:
-        _embed_and_upsert_after_approve(
+        embedded = _embed_and_upsert_after_approve(
             conn, table="lessons", kind="lesson", code=target_id, text_column="what_happened",
             select_columns="code, what_happened, severity, area_affected, tags",
             build_metadata=_lesson_embedding_metadata, upsert_fn=vector_store.upsert_lesson,
@@ -845,6 +849,7 @@ def _approve_update_proposal(
         "file_path": str(dest_path),
         "file_offset": old_offset,
         "byte_length": new_length,
+        "embedded": embedded,
     }
 
 
@@ -1011,13 +1016,13 @@ def _approve_create_proposal(
     conn.commit()
 
     if prop_type == "rule":
-        _embed_and_upsert_after_approve(
+        embedded = _embed_and_upsert_after_approve(
             conn, table="rules", kind="rule", code=code, text_column="text",
             select_columns="code, text, category, severity, applies_to, tags",
             build_metadata=_rule_embedding_metadata, upsert_fn=vector_store.upsert_rule,
         )
     else:
-        _embed_and_upsert_after_approve(
+        embedded = _embed_and_upsert_after_approve(
             conn, table="lessons", kind="lesson", code=code, text_column="what_happened",
             select_columns="code, what_happened, severity, area_affected, tags",
             build_metadata=_lesson_embedding_metadata, upsert_fn=vector_store.upsert_lesson,
@@ -1030,6 +1035,7 @@ def _approve_create_proposal(
         "file_path": str(dest_path),
         "file_offset": file_offset,
         "byte_length": byte_length,
+        "embedded": embedded,
     }
 
 
@@ -1345,7 +1351,7 @@ def _embed_and_upsert_after_approve(
     select_columns: str,
     build_metadata,
     upsert_fn,
-) -> None:
+) -> bool:
     """Embed and upsert the just-approved row into the vector store.
 
     Called after the approval's own transaction has already committed, so
@@ -1359,6 +1365,10 @@ def _embed_and_upsert_after_approve(
     indefinitely (approve_proposal's update path resets embedding_id to
     NULL, but that alone doesn't touch — or refresh — the stale ChromaDB
     entry still sitting under the same id).
+
+    Returns True on success, False on any failure — callers surface this
+    to the approval's own response as "embedded", orthogonal to whether
+    the approval itself succeeded (it already committed by this point).
     """
     try:
         row = conn.execute(
@@ -1366,7 +1376,7 @@ def _embed_and_upsert_after_approve(
             (code,),
         ).fetchone()
         if row is None:
-            return
+            return False
         columns = ["id", "scope_id", *[c.strip() for c in select_columns.split(",")]]
         row_dict = dict(zip(columns, row))
         entity_id = row_dict["id"]
@@ -1379,8 +1389,10 @@ def _embed_and_upsert_after_approve(
             (text_hash, entity_id),
         )
         conn.commit()
+        return True
     except Exception:
         logger.exception("Failed to embed/upsert %s %s after approval", kind, code)
+        return False
 
 
 def _generate_embeddings_for_table(

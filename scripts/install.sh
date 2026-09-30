@@ -168,7 +168,7 @@ setup_venv() {
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             rm -rf "$VENV_DIR"
         else
-            return
+            return 0
         fi
     fi
 

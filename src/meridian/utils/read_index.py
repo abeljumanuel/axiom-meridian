@@ -54,6 +54,12 @@ def write_block(conn: sqlite3.Connection, dest_path: Path, new_content: bytes) -
     indexed_files can never drift from what a Meridian-driven write produced
     (archy-rendimiento.md §7-Riesgo 1). Every writer of a knowledge .md file
     — append, in-place update, deprecation marking — must go through this.
+
+    Note: this only keeps indexed_files (the read-path freshness fingerprint)
+    in sync. A caller that rewrites an *existing* block in place (not a pure
+    append) and changes its byte length must separately call
+    shift_offsets_after for the same file_path/edited_offset/delta — this
+    function has no way to know a block's old length, only the caller does.
     """
     dest_path.write_bytes(new_content)
     stat = dest_path.stat()
@@ -69,6 +75,31 @@ def write_block(conn: sqlite3.Connection, dest_path: Path, new_content: bytes) -
         """,
         (str(dest_path), stat.st_mtime, content_hash),
     )
+
+
+def shift_offsets_after(
+    conn: sqlite3.Connection, file_path: str | Path, edited_offset: int, delta: int
+) -> None:
+    """After a block at `edited_offset` in `file_path` changes byte length
+    by `delta`, shift file_offset by `delta` for every rules/lessons row in
+    the same file positioned after it.
+
+    The edited row's own offset is unaffected by construction: a block's
+    start position doesn't move when it grows or shrinks, so its
+    file_offset is never > edited_offset and this never touches it. Call
+    this in the same transaction as the write that changed the block's
+    length and the edited row's own file_offset/byte_length update —
+    see write_block's docstring for which callers need this.
+    """
+    if delta == 0:
+        return
+    file_path = str(file_path)
+    for table in ("rules", "lessons"):
+        conn.execute(
+            f"UPDATE {table} SET file_offset = file_offset + ? "  # noqa: S608
+            "WHERE file_path = ? AND file_offset > ?",
+            (delta, file_path, edited_offset),
+        )
 
 
 def sync_tags(

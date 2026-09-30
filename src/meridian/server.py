@@ -164,7 +164,8 @@ def index_rules_from_markdown(
     mode: Annotated[
         str,
         Field(
-            description="'atomic': parse canonical ## RN-XXX-NNN blocks and upsert "
+            description="'atomic': parse canonical ## RN-XXX-NNN blocks (the {TECH} "
+            "segment is optional — plain ## RN-NNN is also accepted) and upsert "
             "them directly into rules/rule_history. 'legacy': parse old ### blocks "
             "into pending_proposals only, never writing to rules directly."
         ),
@@ -203,7 +204,8 @@ def index_lessons_from_markdown(
     mode: Annotated[
         str,
         Field(
-            description="'atomic': parse canonical ## LL-XXX-NNN blocks and upsert "
+            description="'atomic': parse canonical ## LL-XXX-NNN blocks (the {TECH} "
+            "segment is optional — plain ## LL-NNN is also accepted) and upsert "
             "them directly into lessons/lesson_history. 'legacy': parse old ### "
             "blocks into pending_proposals only, never writing to lessons directly."
         ),

@@ -22,8 +22,9 @@ class ParsedBlock:
     byte_length: int
 
 
-# Matches ## RN-XXX-NNN or ## LL-XXX-NNN at the start of a line
-_BLOCK_HEADER_RE = re.compile(r"^## (RN|LL)-[A-Z0-9]+-\d+", re.MULTILINE)
+# Matches ## RN-XXX-NNN / ## LL-XXX-NNN, or the plain legacy form
+# ## RN-NNN / ## LL-NNN with no {TECH} segment, at the start of a line.
+_BLOCK_HEADER_RE = re.compile(r"^## (RN|LL)-(?:[A-Z0-9]+-)?\d+", re.MULTILINE)
 # Matches **Campo:** valor (single-line fields)
 _FIELD_RE = re.compile(r"\*\*([^*]+):\*\*\s*(.+)")
 # Field labels from both RULE_TEMPLATE and LESSON_TEMPLATE (knowledge_templates.py) —
@@ -161,7 +162,8 @@ def parse(filepath: str) -> tuple[list[ParsedBlock], list[str]]:
     if not matches and text.strip():
         warnings.append(
             f"{filepath}: no atomic blocks found (expected a header matching "
-            f"'## RN-<TECH>-<NNN>' or '## LL-<TECH>-<NNN>' at the start of a line)"
+            f"'## RN-<TECH>-<NNN>'/'## RN-<NNN>' or '## LL-<TECH>-<NNN>'/'## LL-<NNN>' "
+            f"({{TECH}} is optional) at the start of a line)"
         )
 
     for i, match in enumerate(matches):

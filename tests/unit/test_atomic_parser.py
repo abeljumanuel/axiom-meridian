@@ -94,6 +94,30 @@ def test_header_regex_accepts_digits_in_tech_segment(tmp_path):
     assert warnings == []
 
 
+def test_header_regex_accepts_plain_codes(tmp_path):
+    """Regression: the original regex required a {TECH} segment
+    (RN-{TECH}-NNN), so the legacy plain-code format RN-NNN/LL-NNN (no
+    {TECH}) never matched and was silently dropped — 95 of 105 blocks in a
+    migrated KB used this format. {TECH}- must be optional as a whole
+    unit, not just its trailing character."""
+    content = (
+        "## RN-086\n"
+        "**Scope:** global\n"
+        "**Categoría:** test\n"
+        "**Severidad:** low\n"
+        "**Aplica a:** **/*\n"
+        "**Tags:** legacy\n"
+        "**Fuente:** manual\n"
+        "**Regla:** text\n"
+    )
+    f = tmp_path / "plain.md"
+    f.write_text(content)
+    blocks, warnings = parse(str(f))
+    assert len(blocks) == 1
+    assert blocks[0].code == "RN-086"
+    assert warnings == []
+
+
 def test_no_blocks_found_warns_on_nonempty_file(tmp_path):
     """Regression (ADR-006, Option B2): a non-empty file that matches zero
     atomic block headers must surface an explicit warning naming the file

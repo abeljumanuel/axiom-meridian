@@ -34,9 +34,19 @@ def _check_python_environment() -> None:
 
 
 def _cmd_version(argv: list[str]) -> None:
-    from meridian import __version__
+    from meridian.utils.version_info import get_version_info
 
-    print(f"Axiom Meridian v{__version__}")
+    info = get_version_info()
+    line = f"Axiom Meridian v{info['version']}"
+    if info["commit"]:
+        line += f" — commit {info['commit']}"
+        if info["dirty"]:
+            line += " (dirty)"
+        if info["commit_date"]:
+            line += f", {info['commit_date']}"
+    print(line)
+    if info["source_dir"]:
+        print(f"Source: {info['source_dir']}")
 
 
 def _cmd_mcp(argv: list[str]) -> None:

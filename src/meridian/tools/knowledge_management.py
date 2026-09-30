@@ -825,6 +825,19 @@ def _approve_update_proposal(
         conn.rollback()
         raise
 
+    if target_table == "rules":
+        _embed_and_upsert_after_approve(
+            conn, table="rules", kind="rule", code=target_id, text_column="text",
+            select_columns="code, text, category, severity, applies_to, tags",
+            build_metadata=_rule_embedding_metadata, upsert_fn=vector_store.upsert_rule,
+        )
+    else:
+        _embed_and_upsert_after_approve(
+            conn, table="lessons", kind="lesson", code=target_id, text_column="what_happened",
+            select_columns="code, what_happened, severity, area_affected, tags",
+            build_metadata=_lesson_embedding_metadata, upsert_fn=vector_store.upsert_lesson,
+        )
+
     return {
         "proposal_id": proposal_id,
         "code": target_id,
@@ -996,6 +1009,19 @@ def _approve_create_proposal(
         (proposal_id,),
     )
     conn.commit()
+
+    if prop_type == "rule":
+        _embed_and_upsert_after_approve(
+            conn, table="rules", kind="rule", code=code, text_column="text",
+            select_columns="code, text, category, severity, applies_to, tags",
+            build_metadata=_rule_embedding_metadata, upsert_fn=vector_store.upsert_rule,
+        )
+    else:
+        _embed_and_upsert_after_approve(
+            conn, table="lessons", kind="lesson", code=code, text_column="what_happened",
+            select_columns="code, what_happened, severity, area_affected, tags",
+            build_metadata=_lesson_embedding_metadata, upsert_fn=vector_store.upsert_lesson,
+        )
 
     return {
         "proposal_id": proposal_id,
@@ -1307,6 +1333,54 @@ def _lesson_embedding_metadata(row: dict) -> dict:
         "area_affected": row["area_affected"] or "",
         "tags": row.get("tags") or "[]",
     }
+
+
+def _embed_and_upsert_after_approve(
+    conn: sqlite3.Connection,
+    *,
+    table: str,
+    kind: str,
+    code: str,
+    text_column: str,
+    select_columns: str,
+    build_metadata,
+    upsert_fn,
+) -> None:
+    """Embed and upsert the just-approved row into the vector store.
+
+    Called after the approval's own transaction has already committed, so
+    a failure here (model load, ChromaDB unavailable, ...) is logged and
+    leaves embedding_id NULL for a later generate_embeddings() pass to
+    pick up — it must never affect an approval that already succeeded.
+    Without this, a newly-created rule/lesson is invisible to
+    query_rules/query_lessons's semantic (query_text) search until
+    someone runs generate_embeddings manually, and an updated one keeps
+    serving its pre-update text/metadata from the vector store
+    indefinitely (approve_proposal's update path resets embedding_id to
+    NULL, but that alone doesn't touch — or refresh — the stale ChromaDB
+    entry still sitting under the same id).
+    """
+    try:
+        row = conn.execute(
+            f"SELECT id, scope_id, {select_columns} FROM {table} WHERE code = ?",  # noqa: S608
+            (code,),
+        ).fetchone()
+        if row is None:
+            return
+        columns = ["id", "scope_id", *[c.strip() for c in select_columns.split(",")]]
+        row_dict = dict(zip(columns, row))
+        entity_id = row_dict["id"]
+        text = row_dict[text_column]
+        embedding = embedder.generate_embedding(text)
+        upsert_fn(entity_id, text, embedding, build_metadata(row_dict))
+        text_hash = hashlib.sha256(text.encode()).hexdigest()[:16]
+        conn.execute(
+            f"UPDATE {table} SET embedding_id = ? WHERE id = ?",  # noqa: S608
+            (text_hash, entity_id),
+        )
+        conn.commit()
+    except Exception:
+        logger.exception("Failed to embed/upsert %s %s after approval", kind, code)
 
 
 def _generate_embeddings_for_table(

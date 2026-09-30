@@ -403,3 +403,37 @@ def test_promote_rule_shifts_later_blocks_offset_in_same_file(tmp_kb):
     ].decode("utf-8")
     assert text_b in block_b_text
     assert "**Status:** deprecated" not in block_b_text
+
+
+def test_approve_create_proposal_survives_embedding_failure(tmp_kb, monkeypatch):
+    """Regression (Hallazgo 5): an embedding/upsert failure after approval
+    must not affect the approval itself — it already committed before the
+    embed step runs. embedding_id just stays NULL for a later
+    generate_embeddings pass to pick up."""
+    kb_path, conn = tmp_kb
+    dest_file = kb_path / "knowledge-base" / "global" / "java.md"
+    dest_file.write_text("")
+
+    from meridian.rag import vector_store
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("chromadb unavailable")
+
+    monkeypatch.setattr(vector_store, "upsert_rule", boom)
+
+    prop_id = "prop-0001"
+    conn.execute(
+        "INSERT INTO pending_proposals "
+        "(id, type, scope_id, proposed_text, metadata, source_type) "
+        "VALUES (?, 'rule', 'global-java', ?, ?, 'manual')",
+        (prop_id, "Some new rule text.", json.dumps({"tags": ["x"]})),
+    )
+    conn.commit()
+
+    result = approve_proposal(prop_id)  # must not raise
+
+    assert result["code"]
+    row = conn.execute(
+        "SELECT embedding_id FROM rules WHERE code = ?", (result["code"],)
+    ).fetchone()
+    assert row[0] is None

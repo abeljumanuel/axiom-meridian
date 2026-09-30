@@ -15,6 +15,7 @@ TOOL_ACCESS_LEVELS: dict[str, str] = {
     "get_rule_context": "read",
     "get_rule_timeline": "read",
     "get_project_scope_resolution": "read",
+    "get_server_info": "read",
     "get_rule_audit_log": "read",
     "list_pending_proposals": "read",
     "get_rule_template": "read",

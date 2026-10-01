@@ -54,6 +54,7 @@ CREATE TABLE rule_history (
   reason        TEXT,
   triggered_by  TEXT,
   superseded_by TEXT REFERENCES rules(id),
+  actor_id      TEXT,
   changed_at    TEXT DEFAULT (datetime('now'))
 );
 
@@ -67,6 +68,7 @@ CREATE TABLE lesson_history (
   reason        TEXT,
   triggered_by  TEXT,
   superseded_by TEXT REFERENCES lessons(id),
+  actor_id      TEXT,
   changed_at    TEXT DEFAULT (datetime('now'))
 );
 
@@ -148,6 +150,7 @@ CREATE TABLE pending_proposals (
   status               TEXT DEFAULT 'pending',
   reason               TEXT,
   legacy_original      TEXT,
+  actor_id             TEXT,
   created_at           TEXT DEFAULT (datetime('now'))
 );
 
@@ -160,7 +163,8 @@ CREATE TABLE access_log (
   project_id  TEXT,
   parameters  TEXT,
   result      TEXT NOT NULL,
-  transport   TEXT
+  transport   TEXT,
+  actor_id    TEXT
 );
 
 -- Contadores atómicos de IDs secuenciales (reemplaza MAX(id) LIKE 'prefix-%')

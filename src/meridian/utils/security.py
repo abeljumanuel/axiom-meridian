@@ -1,5 +1,6 @@
 """Access control, session tokens, and audit logging."""
 
+import getpass
 import json
 import os
 import secrets
@@ -87,6 +88,53 @@ def check_access(tool_name: str) -> None:
         raise AccessDeniedError(tool_name, required, current)
 
 
+# --- Actor identity (openspec/changes/add-actor-identity-tracking) ---
+
+_VALID_MODES = {"local", "shared"}
+
+# Returned by resolve_actor() in local mode when getpass.getuser() itself
+# can't resolve an OS user (e.g. some containers/CI have no password-database
+# entry for the running uid) — attribution must never break a write path
+# that worked before this feature existed.
+_UNKNOWN_LOCAL_ACTOR = "unknown-local-user"
+
+
+def get_mode() -> str:
+    """
+    Lee MERIDIAN_MODE del entorno.
+    Valores válidos: "local", "shared".
+    Default: "local".
+    Si el valor no es válido, lanza ValueError.
+    """
+    mode = os.environ.get("MERIDIAN_MODE", "local").lower()
+    if mode not in _VALID_MODES:
+        raise ValueError(
+            f"Invalid MERIDIAN_MODE='{mode}'. Valid values: local, shared"
+        )
+    return mode
+
+
+def resolve_actor() -> str:
+    """
+    Resuelve el actor que origina la llamada actual, para atribución en
+    access_log/pending_proposals/rule_history/lesson_history.
+
+    En modo "local" (default), es el usuario del SO (getpass.getuser()) —
+    sin credenciales, sin configuración adicional. No afecta check_access:
+    esta función es solo para atribución, nunca para autorización.
+    """
+    mode = get_mode()
+    if mode == "shared":
+        raise NotImplementedError(
+            "MERIDIAN_MODE=shared is not yet implemented — see "
+            "openspec/changes/add-actor-identity-tracking/design.md"
+        )
+    try:
+        return getpass.getuser()
+    except OSError:
+        return _UNKNOWN_LOCAL_ACTOR
+
+
 # --- Session token (HTTP/SSE only) ---
 
 
@@ -137,11 +185,21 @@ def log_tool_access(
     parameters: str,
     result: str,
     transport: str,
+    actor_id: str | None = None,
 ) -> None:
     """Inserta un registro en access_log."""
     conn.execute(
         "INSERT INTO access_log (id, tool_name, access_level, project_id, "
-        "parameters, result, transport) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (log_id, tool_name, access_level, project_id, parameters, result, transport),
+        "parameters, result, transport, actor_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            log_id,
+            tool_name,
+            access_level,
+            project_id,
+            parameters,
+            result,
+            transport,
+            actor_id,
+        ),
     )
     conn.commit()

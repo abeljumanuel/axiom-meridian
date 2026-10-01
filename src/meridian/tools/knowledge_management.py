@@ -28,6 +28,7 @@ from meridian.utils.read_index import (
     sync_tags,
     write_block,
 )
+from meridian.utils.security import resolve_actor
 
 logger = logging.getLogger(__name__)
 
@@ -222,10 +223,10 @@ def _insert_indexed_rule(conn: sqlite3.Connection, block, scope_id: str, clean_t
     conn.execute(
         """
         INSERT INTO rule_history
-        (id, rule_id, change_type, new_text)
-        VALUES (?, ?, ?, ?)
+        (id, rule_id, change_type, new_text, actor_id)
+        VALUES (?, ?, ?, ?, ?)
         """,
-        (hist_id, rule_id, "CREATED", clean_text),
+        (hist_id, rule_id, "CREATED", clean_text, resolve_actor()),
     )
     sync_tags(conn, "rule_tags", "rule_id", rule_id, block.tags)
 
@@ -264,10 +265,10 @@ def _update_indexed_rule(
     conn.execute(
         """
         INSERT INTO rule_history
-        (id, rule_id, change_type, previous_text, new_text)
-        VALUES (?, ?, ?, ?, ?)
+        (id, rule_id, change_type, previous_text, new_text, actor_id)
+        VALUES (?, ?, ?, ?, ?, ?)
         """,
-        (hist_id, existing_id, "UPDATED", existing_text, clean_text),
+        (hist_id, existing_id, "UPDATED", existing_text, clean_text, resolve_actor()),
     )
     sync_tags(conn, "rule_tags", "rule_id", existing_id, block.tags)
 
@@ -415,10 +416,10 @@ def _insert_indexed_lesson(
     conn.execute(
         """
         INSERT INTO lesson_history
-        (id, lesson_id, change_type)
-        VALUES (?, ?, ?)
+        (id, lesson_id, change_type, actor_id)
+        VALUES (?, ?, ?, ?)
         """,
-        (hist_id, lesson_id, "CREATED"),
+        (hist_id, lesson_id, "CREATED", resolve_actor()),
     )
     sync_tags(conn, "lesson_tags", "lesson_id", lesson_id, block.tags)
 
@@ -463,10 +464,10 @@ def _update_indexed_lesson(
     conn.execute(
         """
         INSERT INTO lesson_history
-        (id, lesson_id, change_type, reason)
-        VALUES (?, ?, ?, ?)
+        (id, lesson_id, change_type, reason, actor_id)
+        VALUES (?, ?, ?, ?, ?)
         """,
-        (hist_id, existing_id, "DEPRECATED", "Updated via re-index"),
+        (hist_id, existing_id, "DEPRECATED", "Updated via re-index", resolve_actor()),
     )
     sync_tags(conn, "lesson_tags", "lesson_id", existing_id, block.tags)
 
@@ -817,10 +818,10 @@ def _approve_update_proposal(
         conn.execute(
             f"""
             INSERT INTO {hist_table}
-            (id, {id_field}, change_type, previous_text, new_text)
-            VALUES (?, ?, ?, ?, ?)
+            (id, {id_field}, change_type, previous_text, new_text, actor_id)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (hist_id, target_id, "UPDATED", old_block_text, proposed_text),
+            (hist_id, target_id, "UPDATED", old_block_text, proposed_text, resolve_actor()),
         )
         conn.execute(
             "UPDATE pending_proposals SET status = 'approved' WHERE id = ?",
@@ -900,10 +901,10 @@ def _approve_deprecate_proposal(
         conn.execute(
             f"""
             INSERT INTO {hist_table}
-            (id, {id_field}, change_type, reason, superseded_by)
-            VALUES (?, ?, ?, ?, ?)
+            (id, {id_field}, change_type, reason, superseded_by, actor_id)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (hist_id, target_id, "DEPRECATED", reason, superseded_by),
+            (hist_id, target_id, "DEPRECATED", reason, superseded_by, resolve_actor()),
         )
         conn.execute(
             "UPDATE pending_proposals SET status = 'approved' WHERE id = ?",
@@ -974,10 +975,10 @@ def _insert_new_rule(
     conn.execute(
         """
         INSERT INTO rule_history
-        (id, rule_id, change_type, new_text)
-        VALUES (?, ?, ?, ?)
+        (id, rule_id, change_type, new_text, actor_id)
+        VALUES (?, ?, ?, ?, ?)
         """,
-        (hist_id, code, "CREATED", proposed_text),
+        (hist_id, code, "CREATED", proposed_text, resolve_actor()),
     )
 
     for attr in suggested_attributes:
@@ -1036,10 +1037,10 @@ def _insert_new_lesson(
     hist_id = next_sequential_id(conn, "lesson_history", "lh")
     conn.execute(
         """
-        INSERT INTO lesson_history (id, lesson_id, change_type)
-        VALUES (?, ?, ?)
+        INSERT INTO lesson_history (id, lesson_id, change_type, actor_id)
+        VALUES (?, ?, ?, ?)
         """,
-        (hist_id, code, "CREATED"),
+        (hist_id, code, "CREATED", resolve_actor()),
     )
 
     sync_tags(conn, "lesson_tags", "lesson_id", code, metadata.get("tags"))
@@ -1382,10 +1383,10 @@ def promote_rule(rule_id: str, new_scope_id: str) -> dict:
         conn.execute(
             """
             INSERT INTO rule_history
-            (id, rule_id, change_type, reason)
-            VALUES (?, ?, ?, ?)
+            (id, rule_id, change_type, reason, actor_id)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (hist_id, rule_id, "PROMOTED", f"Promoted to scope {new_scope_id}"),
+            (hist_id, rule_id, "PROMOTED", f"Promoted to scope {new_scope_id}", resolve_actor()),
         )
 
         conn.commit()

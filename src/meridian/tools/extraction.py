@@ -14,6 +14,7 @@ from meridian.tools.knowledge_templates import (
 from meridian.utils.id_generator import next_sequential_id
 from meridian.utils.privacy import strip_private_tags
 from meridian.utils.scope_resolver import load_scope_attributes, resolve_scope_hierarchy
+from meridian.utils.security import resolve_actor
 
 
 def extract_rules_from_transcript(
@@ -200,8 +201,9 @@ def create_pending_proposal(
         """
         INSERT INTO pending_proposals
         (id, type, scope_id, target_id, proposed_text,
-         suggested_attributes, source_type, source_ref, reason, metadata)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         suggested_attributes, source_type, source_ref, reason, metadata,
+         actor_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             prop_id,
@@ -214,6 +216,7 @@ def create_pending_proposal(
             source_ref,
             reason,
             json.dumps(metadata) if metadata else None,
+            resolve_actor(),
         ),
     )
     conn.commit()

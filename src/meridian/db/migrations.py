@@ -60,6 +60,14 @@ def _apply_migration(conn: sqlite3.Connection, number: int, path: Path) -> None:
         if "superseded_by" in existing:
             return
 
+    if number == 6:
+        # Same ALTER TABLE ADD COLUMN limitation as migration 5 — a database
+        # created after schema.sql already defined actor_id on all four
+        # tables would otherwise fail with "duplicate column name".
+        existing = _table_columns(conn, "access_log")
+        if "actor_id" in existing:
+            return
+
     for statement in _migration_statements(path.read_text(encoding="utf-8")):
         conn.execute(statement)
 

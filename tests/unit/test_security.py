@@ -1,15 +1,19 @@
 """Unit tests for security utilities."""
 
+import getpass
 import json
 
 import pytest
 
 from meridian.utils.security import (
+    TOOL_ACCESS_LEVELS,
     AccessDeniedError,
     check_access,
     extract_safe_params,
     generate_session_token,
     get_access_level,
+    get_mode,
+    resolve_actor,
     validate_session_token,
 )
 
@@ -120,3 +124,85 @@ def test_access_denied_error_message():
     assert "approve_proposal" in msg
     assert "write" in msg
     assert "read" in msg
+
+
+# --- get_mode ---
+
+
+def test_get_mode_default(monkeypatch):
+    monkeypatch.delenv("MERIDIAN_MODE", raising=False)
+    assert get_mode() == "local"
+
+
+def test_get_mode_explicit_local(monkeypatch):
+    monkeypatch.setenv("MERIDIAN_MODE", "local")
+    assert get_mode() == "local"
+
+
+def test_get_mode_shared(monkeypatch):
+    monkeypatch.setenv("MERIDIAN_MODE", "shared")
+    assert get_mode() == "shared"
+
+
+def test_get_mode_invalid(monkeypatch):
+    monkeypatch.setenv("MERIDIAN_MODE", "networked")
+    with pytest.raises(ValueError, match="Invalid MERIDIAN_MODE"):
+        get_mode()
+
+
+# --- resolve_actor ---
+
+
+def test_resolve_actor_default_mode_returns_os_user(monkeypatch):
+    monkeypatch.delenv("MERIDIAN_MODE", raising=False)
+    assert resolve_actor() == getpass.getuser()
+
+
+def test_resolve_actor_explicit_local_mode_matches_unset(monkeypatch):
+    monkeypatch.delenv("MERIDIAN_MODE", raising=False)
+    unset_value = resolve_actor()
+    monkeypatch.setenv("MERIDIAN_MODE", "local")
+    assert resolve_actor() == unset_value
+
+
+def test_resolve_actor_falls_back_when_getuser_raises(monkeypatch):
+    monkeypatch.delenv("MERIDIAN_MODE", raising=False)
+    monkeypatch.setattr(
+        "meridian.utils.security.getpass.getuser",
+        lambda: (_ for _ in ()).throw(OSError("no password entry")),
+    )
+    assert resolve_actor() == "unknown-local-user"
+
+
+def test_resolve_actor_shared_mode_not_implemented(monkeypatch):
+    monkeypatch.setenv("MERIDIAN_MODE", "shared")
+    with pytest.raises(NotImplementedError, match="MERIDIAN_MODE|shared"):
+        resolve_actor()
+
+
+# --- resolve_actor/get_mode are decoupled from check_access (local-user non-regression) ---
+
+
+def test_check_access_unaffected_by_mode(monkeypatch):
+    """check_access's allow/deny result must not depend on MERIDIAN_MODE or
+    the resolved actor — attribution and authorization are fully decoupled
+    (openspec/changes/add-actor-identity-tracking)."""
+    for access_level in ("read", "analyze", "write"):
+        monkeypatch.setenv("MERIDIAN_ACCESS_LEVEL", access_level)
+        for tool_name in TOOL_ACCESS_LEVELS:
+            monkeypatch.delenv("MERIDIAN_MODE", raising=False)
+            result_unset = _try_check_access(tool_name)
+
+            monkeypatch.setenv("MERIDIAN_MODE", "local")
+            result_local = _try_check_access(tool_name)
+
+            assert result_unset == result_local
+
+
+def _try_check_access(tool_name: str) -> bool:
+    """True if allowed, False if AccessDeniedError was raised."""
+    try:
+        check_access(tool_name)
+        return True
+    except AccessDeniedError:
+        return False

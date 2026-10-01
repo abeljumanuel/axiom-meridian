@@ -211,6 +211,63 @@ def test_default_level_is_analyze(tmp_server_db, monkeypatch):
     assert parsed.get("error") == "ACCESS_DENIED"
 
 
+def test_access_log_records_actor_id(tmp_server_db, monkeypatch):
+    """openspec/changes/add-actor-identity-tracking: every access_log row
+    (success, denied, error) carries resolve_actor()'s value."""
+    import getpass
+
+    monkeypatch.delenv("MERIDIAN_MODE", raising=False)
+    monkeypatch.setenv("MERIDIAN_ACCESS_LEVEL", "read")
+
+    server.query_rules("project-project-example")  # success
+    server.approve_proposal("prop-0001")  # denied (read level)
+
+    logs = _last_access_logs(tmp_server_db, 2)
+    for log in logs:
+        assert log["actor_id"] == getpass.getuser()
+
+
+def test_create_pending_proposal_records_actor_id(tmp_server_db, monkeypatch):
+    import getpass
+
+    monkeypatch.delenv("MERIDIAN_MODE", raising=False)
+    monkeypatch.setenv("MERIDIAN_ACCESS_LEVEL", "analyze")
+
+    proposal_id = server.create_pending_proposal(
+        type="rule",
+        proposed_text="Some proposed rule text.",
+        suggested_scope_id="global",
+    )
+
+    row = tmp_server_db.execute(
+        "SELECT actor_id FROM pending_proposals WHERE id = ?", (proposal_id,)
+    ).fetchone()
+    assert row[0] == getpass.getuser()
+
+
+def test_resolve_actor_fallback_end_to_end(tmp_server_db, monkeypatch):
+    """If getpass.getuser() can't resolve an OS user (design.md's flagged
+    risk), a real tool call must still succeed — attribution falling back
+    to a constant, not a new exception reaching the MCP client."""
+    monkeypatch.delenv("MERIDIAN_MODE", raising=False)
+    monkeypatch.setenv("MERIDIAN_ACCESS_LEVEL", "analyze")
+    monkeypatch.setattr(
+        "meridian.utils.security.getpass.getuser",
+        lambda: (_ for _ in ()).throw(OSError("no password entry")),
+    )
+
+    proposal_id = server.create_pending_proposal(
+        type="rule",
+        proposed_text="Some proposed rule text.",
+        suggested_scope_id="global",
+    )
+
+    row = tmp_server_db.execute(
+        "SELECT actor_id FROM pending_proposals WHERE id = ?", (proposal_id,)
+    ).fetchone()
+    assert row[0] == "unknown-local-user"
+
+
 def test_index_then_scope_resolution_no_lock_regression(tmp_path, monkeypatch):
     """Regression for the 2026-09-22 'database is locked' incident (ADR-006).
 

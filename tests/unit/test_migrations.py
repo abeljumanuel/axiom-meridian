@@ -453,6 +453,128 @@ def test_fresh_database_has_deprecation_lifecycle_schema():
             conn.close()
 
 
+def test_legacy_database_gets_actor_identity_columns_applied():
+    """Migration 006: actor_id gets added to pending_proposals, rule_history,
+    lesson_history, and access_log on a database that predates it, leaving
+    existing rows with actor_id = NULL."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        kb_path = Path(tmpdir)
+        _kb_dirs(kb_path)
+        db_path = kb_path / "legacy.db"
+
+        legacy_conn = sqlite3.connect(str(db_path))
+        legacy_conn.execute(
+            "CREATE TABLE scopes (id TEXT PRIMARY KEY, type TEXT, name TEXT, "
+            "parent_id TEXT)"
+        )
+        legacy_conn.execute(
+            "INSERT INTO scopes VALUES ('global', 'global', 'Global', NULL)"
+        )
+        legacy_conn.execute(
+            "INSERT INTO scopes VALUES "
+            "('global-nestjs', 'global', 'Global NestJS', 'global')"
+        )
+        legacy_conn.execute(
+            "CREATE TABLE scope_attributes (scope_id TEXT, key TEXT, value TEXT, "
+            "PRIMARY KEY (scope_id, key))"
+        )
+        legacy_conn.execute(
+            "CREATE TABLE lessons (id TEXT PRIMARY KEY, scope_id TEXT, code TEXT, "
+            "tags TEXT, file_path TEXT, status TEXT DEFAULT 'active')"
+        )
+        legacy_conn.execute(
+            "CREATE TABLE rules (id TEXT PRIMARY KEY, code TEXT, tags TEXT, "
+            "file_path TEXT, status TEXT DEFAULT 'active')"
+        )
+        legacy_conn.execute(
+            "CREATE TABLE access_log (id TEXT PRIMARY KEY, tool_name TEXT)"
+        )
+        legacy_conn.execute(
+            "INSERT INTO access_log (id, tool_name) VALUES ('al-0001', 'query_rules')"
+        )
+        legacy_conn.execute(
+            "CREATE TABLE pending_proposals (id TEXT PRIMARY KEY, scope_id TEXT)"
+        )
+        legacy_conn.execute(
+            "INSERT INTO pending_proposals (id, scope_id) VALUES ('pp-0001', 'global')"
+        )
+        legacy_conn.execute(
+            "CREATE TABLE rule_history (id TEXT PRIMARY KEY, rule_id TEXT, "
+            "change_type TEXT, reason TEXT)"
+        )
+        legacy_conn.execute(
+            "INSERT INTO rule_history (id, rule_id, change_type, reason) "
+            "VALUES ('rh-0001', 'RN-GLOBAL-001', 'PROMOTED', "
+            "'Promoted to scope global-java')"
+        )
+        legacy_conn.execute(
+            "CREATE TABLE lesson_history (id TEXT PRIMARY KEY, lesson_id TEXT, "
+            "change_type TEXT, reason TEXT)"
+        )
+        legacy_conn.execute(
+            "CREATE TABLE pr_audits (id TEXT PRIMARY KEY, pr_ref TEXT, project_id TEXT)"
+        )
+        legacy_conn.execute("CREATE TABLE planning_checks (id TEXT PRIMARY KEY)")
+        legacy_conn.commit()
+        legacy_conn.close()
+
+        initialize_db(db_path)
+
+        conn = get_connection(db_path)
+        try:
+            for table in (
+                "pending_proposals",
+                "rule_history",
+                "lesson_history",
+                "access_log",
+            ):
+                columns = {
+                    row[1] for row in conn.execute(f"PRAGMA table_info({table})")
+                }
+                assert "actor_id" in columns
+
+            # Pre-existing rows are untouched other than the new NULL column.
+            assert conn.execute(
+                "SELECT actor_id FROM access_log WHERE id = 'al-0001'"
+            ).fetchone()[0] is None
+            assert conn.execute(
+                "SELECT actor_id FROM pending_proposals WHERE id = 'pp-0001'"
+            ).fetchone()[0] is None
+            assert conn.execute(
+                "SELECT reason, actor_id FROM rule_history WHERE id = 'rh-0001'"
+            ).fetchone() == ("Promoted to scope global-java", None)
+
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            assert version >= 6
+        finally:
+            conn.close()
+
+
+def test_fresh_database_has_actor_identity_schema():
+    """A fresh db init (schema.sql path) matches what migration 006 gives an
+    existing database: actor_id on all four attribution-relevant tables."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        kb_path = Path(tmpdir)
+        _kb_dirs(kb_path)
+        db_path = kb_path / "fresh.db"
+        initialize_db(db_path)
+
+        conn = get_connection(db_path)
+        try:
+            for table in (
+                "pending_proposals",
+                "rule_history",
+                "lesson_history",
+                "access_log",
+            ):
+                columns = {
+                    row[1] for row in conn.execute(f"PRAGMA table_info({table})")
+                }
+                assert "actor_id" in columns
+        finally:
+            conn.close()
+
+
 def test_partial_failure_keeps_earlier_successful_migrations_committed():
     with tempfile.TemporaryDirectory() as tmpdir:
         kb_path = Path(tmpdir)

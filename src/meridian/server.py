@@ -31,6 +31,7 @@ from meridian.utils.security import (
     extract_safe_params,
     generate_session_token,
     log_tool_access,
+    resolve_actor,
 )
 from meridian.utils.skill_generator import generate_project_skills as _generate_project_skills_impl
 from meridian.utils.version_info import get_version_info
@@ -108,6 +109,7 @@ def _security_pattern(
     log_id = next_sequential_id(c, "access_log", "al")
     c.commit()
     params = extract_safe_params(params_dict)
+    actor_id = resolve_actor()
     try:
         check_access(tool_name)
         result = impl_callable()
@@ -120,6 +122,7 @@ def _security_pattern(
             params,
             "success",
             current_transport,
+            actor_id,
         )
         return _dump(result)
     except AccessDeniedError as e:
@@ -132,6 +135,7 @@ def _security_pattern(
             params,
             "denied",
             current_transport,
+            actor_id,
         )
         return _dump(
             {
@@ -152,6 +156,7 @@ def _security_pattern(
             params,
             "error",
             current_transport,
+            actor_id,
         )
         raise
 

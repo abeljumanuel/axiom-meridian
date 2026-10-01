@@ -71,7 +71,7 @@ def test_legacy_database_gets_migration_001_applied():
         )
         legacy_conn.execute(
             "CREATE TABLE lessons (id TEXT PRIMARY KEY, scope_id TEXT, code TEXT, "
-            "tags TEXT, file_path TEXT)"
+            "tags TEXT, file_path TEXT, status TEXT DEFAULT 'active')"
         )
         legacy_conn.execute(
             "CREATE TABLE rules (id TEXT PRIMARY KEY, code TEXT, tags TEXT, "
@@ -142,7 +142,7 @@ def test_legacy_database_gets_nodejs_python_scopes_applied():
         )
         legacy_conn.execute(
             "CREATE TABLE lessons (id TEXT PRIMARY KEY, scope_id TEXT, code TEXT, "
-            "tags TEXT, file_path TEXT)"
+            "tags TEXT, file_path TEXT, status TEXT DEFAULT 'active')"
         )
         legacy_conn.execute(
             "CREATE TABLE rules (id TEXT PRIMARY KEY, code TEXT, tags TEXT, "
@@ -238,7 +238,7 @@ def test_legacy_database_with_existing_lessons_rows_migrates_without_error():
         )
         legacy_conn.execute(
             "CREATE TABLE lessons (id TEXT PRIMARY KEY, scope_id TEXT, code TEXT, "
-            "what_happened TEXT, tags TEXT, file_path TEXT)"
+            "what_happened TEXT, tags TEXT, file_path TEXT, status TEXT DEFAULT 'active')"
         )
         legacy_conn.execute(
             "CREATE TABLE rules (id TEXT PRIMARY KEY, code TEXT, tags TEXT, "
@@ -331,6 +331,124 @@ def test_failing_migration_rolls_back_and_leaves_a_backup():
 
             backups = list(kb_path.glob("test.db.bak-*"))
             assert len(backups) == 1
+        finally:
+            conn.close()
+
+
+def test_legacy_database_gets_deprecation_lifecycle_columns_applied():
+    """Migration 005: superseded_by gets added to rule_history/lesson_history
+    and idx_lessons_status gets created on a database that predates it,
+    without disturbing existing history rows."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        kb_path = Path(tmpdir)
+        _kb_dirs(kb_path)
+        db_path = kb_path / "legacy.db"
+
+        legacy_conn = sqlite3.connect(str(db_path))
+        legacy_conn.execute(
+            "CREATE TABLE scopes (id TEXT PRIMARY KEY, type TEXT, name TEXT, "
+            "parent_id TEXT)"
+        )
+        legacy_conn.execute(
+            "INSERT INTO scopes VALUES ('global', 'global', 'Global', NULL)"
+        )
+        legacy_conn.execute(
+            "INSERT INTO scopes VALUES "
+            "('global-nestjs', 'global', 'Global NestJS', 'global')"
+        )
+        legacy_conn.execute(
+            "CREATE TABLE scope_attributes (scope_id TEXT, key TEXT, value TEXT, "
+            "PRIMARY KEY (scope_id, key))"
+        )
+        legacy_conn.execute(
+            "CREATE TABLE lessons (id TEXT PRIMARY KEY, scope_id TEXT, code TEXT, "
+            "tags TEXT, file_path TEXT, status TEXT DEFAULT 'active')"
+        )
+        legacy_conn.execute(
+            "CREATE TABLE rules (id TEXT PRIMARY KEY, code TEXT, tags TEXT, "
+            "file_path TEXT, status TEXT DEFAULT 'active')"
+        )
+        legacy_conn.execute("CREATE TABLE access_log (id TEXT PRIMARY KEY)")
+        legacy_conn.execute(
+            "CREATE TABLE pending_proposals (id TEXT PRIMARY KEY, scope_id TEXT)"
+        )
+        legacy_conn.execute(
+            "CREATE TABLE rule_history (id TEXT PRIMARY KEY, rule_id TEXT, "
+            "change_type TEXT, reason TEXT)"
+        )
+        legacy_conn.execute(
+            "INSERT INTO rule_history (id, rule_id, change_type, reason) "
+            "VALUES ('rh-0001', 'RN-GLOBAL-001', 'PROMOTED', "
+            "'Promoted to scope global-java')"
+        )
+        legacy_conn.execute(
+            "CREATE TABLE lesson_history (id TEXT PRIMARY KEY, lesson_id TEXT, "
+            "change_type TEXT, reason TEXT)"
+        )
+        legacy_conn.execute(
+            "CREATE TABLE pr_audits (id TEXT PRIMARY KEY, pr_ref TEXT, project_id TEXT)"
+        )
+        legacy_conn.execute("CREATE TABLE planning_checks (id TEXT PRIMARY KEY)")
+        legacy_conn.commit()
+        legacy_conn.close()
+
+        initialize_db(db_path)
+
+        conn = get_connection(db_path)
+        try:
+            rule_hist_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(rule_history)")
+            }
+            lesson_hist_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(lesson_history)")
+            }
+            assert "superseded_by" in rule_hist_columns
+            assert "superseded_by" in lesson_hist_columns
+
+            # Pre-existing history row is untouched, superseded_by defaults
+            # to NULL rather than anything inferred from its free-text reason.
+            row = conn.execute(
+                "SELECT reason, superseded_by FROM rule_history WHERE id = 'rh-0001'"
+            ).fetchone()
+            assert row[0] == "Promoted to scope global-java"
+            assert row[1] is None
+
+            indexes = {
+                row[1] for row in conn.execute("PRAGMA index_list(lessons)")
+            }
+            assert "idx_lessons_status" in indexes
+
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            assert version >= 5
+        finally:
+            conn.close()
+
+
+def test_fresh_database_has_deprecation_lifecycle_schema():
+    """A fresh db init (schema.sql path) matches what migration 005 gives
+    an existing database: superseded_by on both history tables and
+    idx_lessons_status."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        kb_path = Path(tmpdir)
+        _kb_dirs(kb_path)
+        db_path = kb_path / "fresh.db"
+        initialize_db(db_path)
+
+        conn = get_connection(db_path)
+        try:
+            rule_hist_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(rule_history)")
+            }
+            lesson_hist_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(lesson_history)")
+            }
+            assert "superseded_by" in rule_hist_columns
+            assert "superseded_by" in lesson_hist_columns
+
+            indexes = {
+                row[1] for row in conn.execute("PRAGMA index_list(lessons)")
+            }
+            assert "idx_lessons_status" in indexes
         finally:
             conn.close()
 

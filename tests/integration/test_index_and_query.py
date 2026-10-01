@@ -10,6 +10,7 @@ import pytest
 from meridian.db.connection import get_connection, initialize_db
 from meridian.tools.knowledge_consumption import (
     get_rule_timeline,
+    query_lessons,
     query_rules,
 )
 from meridian.tools.knowledge_management import (
@@ -260,6 +261,57 @@ def test_query_rules_full(tmp_kb):
     assert data[0]["text"]
     assert "Regla:" not in data[0]["text"]
     assert "error" not in data[0]
+
+
+def test_query_rules_excludes_deprecated_by_default(tmp_kb):
+    kb_path, conn = tmp_kb
+    shutil.copy(
+        "knowledge-base/global/java.md",
+        kb_path / "knowledge-base" / "global" / "java.md",
+    )
+    filepath = str(kb_path / "knowledge-base" / "global" / "java.md")
+    index_rules_from_markdown(filepath, default_scope_id="global-java", mode="atomic")
+    conn.execute("UPDATE rules SET status = 'deprecated' WHERE code = 'RN-JAVA-001'")
+    conn.commit()
+
+    data = json.loads(query_rules("global-java", detail="summary"))
+    assert "RN-JAVA-001" not in {r["code"] for r in data}
+    assert len(data) == 2
+
+
+def test_query_rules_include_deprecated_true_surfaces_it(tmp_kb):
+    kb_path, conn = tmp_kb
+    shutil.copy(
+        "knowledge-base/global/java.md",
+        kb_path / "knowledge-base" / "global" / "java.md",
+    )
+    filepath = str(kb_path / "knowledge-base" / "global" / "java.md")
+    index_rules_from_markdown(filepath, default_scope_id="global-java", mode="atomic")
+    conn.execute("UPDATE rules SET status = 'deprecated' WHERE code = 'RN-JAVA-001'")
+    conn.commit()
+
+    data = json.loads(query_rules("global-java", detail="summary", include_deprecated=True))
+    assert "RN-JAVA-001" in {r["code"] for r in data}
+    assert len(data) == 3
+
+
+def test_query_lessons_include_deprecated(tmp_kb):
+    kb_path, conn = tmp_kb
+    conn.execute(
+        "INSERT INTO lessons (id, scope_id, code, what_happened, severity, status) "
+        "VALUES ('LL-JAVA-001', 'global-java', 'LL-JAVA-001', 'Deploy failed.', 'medium', 'deprecated')"
+    )
+    conn.execute(
+        "INSERT INTO lessons (id, scope_id, code, what_happened, severity, status) "
+        "VALUES ('LL-JAVA-002', 'global-java', 'LL-JAVA-002', 'Still relevant.', 'medium', 'active')"
+    )
+    conn.commit()
+
+    default_data = json.loads(query_lessons("global-java", detail="summary"))
+    assert {lesson["code"] for lesson in default_data} == {"LL-JAVA-002"}
+
+    all_data = json.loads(query_lessons("global-java", detail="summary", include_deprecated=True))
+    assert {lesson["code"] for lesson in all_data} == {"LL-JAVA-001", "LL-JAVA-002"}
 
 
 def test_query_rules_filter_severity(tmp_kb):

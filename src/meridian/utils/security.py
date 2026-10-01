@@ -28,6 +28,7 @@ TOOL_ACCESS_LEVELS: dict[str, str] = {
     "extract_rules_from_transcript": "analyze",
     "extract_lessons_from_transcript": "analyze",
     "create_pending_proposal": "analyze",
+    "deprecate_rule": "analyze",
     # write
     "index_rules_from_markdown": "write",
     "index_lessons_from_markdown": "write",

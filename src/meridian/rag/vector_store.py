@@ -104,6 +104,12 @@ def search_rules(
     return output
 
 
+def delete_rule(rule_id: str) -> None:
+    """Remove a rule from the vector store (e.g. on deprecation)."""
+    collection = _get_collection(_RULES_COLLECTION)
+    collection.delete(ids=[rule_id])
+
+
 def upsert_lesson(
     lesson_id: str,
     text: str,
@@ -118,6 +124,12 @@ def upsert_lesson(
         embeddings=[embedding],
         metadatas=[metadata],
     )
+
+
+def delete_lesson(lesson_id: str) -> None:
+    """Remove a lesson from the vector store (e.g. on deprecation)."""
+    collection = _get_collection(_LESSONS_COLLECTION)
+    collection.delete(ids=[lesson_id])
 
 
 def search_lessons(

@@ -389,6 +389,51 @@ def promote_rule(
 
 
 @mcp.tool()
+def deprecate_rule(
+    rule_id: Annotated[str, Field(description="The RN-* or LL-* id of the rule/lesson to deprecate.")],
+    reason: Annotated[str, Field(description="Why this rule/lesson is being deprecated.")],
+    superseded_by: Annotated[
+        str | None,
+        Field(description="Optional RN-*/LL-* id of the active rule/lesson that replaces this one."),
+    ] = None,
+) -> str:
+    """Create a proposal to deprecate a rule or lesson on its own, without
+    changing its scope (unlike promote_rule). Accepts both RN-* and LL-*
+    ids. Only creates a pending_proposals row (type='deprecate') — no
+    immediate effect; approve_proposal performs the actual deprecation
+    after human review.
+
+    Access level: analyze.
+    Returns: the new proposal's id, as a plain string.
+    """
+    tool_name = "deprecate_rule"
+    params = {"rule_id": rule_id, "reason": reason, "superseded_by": superseded_by}
+    project_id = None
+
+    def _impl() -> str:
+        c = _get_conn()
+        if rule_id.startswith("RN-"):
+            row = c.execute("SELECT text FROM rules WHERE id = ?", (rule_id,)).fetchone()
+        elif rule_id.startswith("LL-"):
+            row = c.execute("SELECT what_happened FROM lessons WHERE id = ?", (rule_id,)).fetchone()
+        else:
+            row = None
+        current_text = row[0] if row else rule_id
+
+        return extraction.create_pending_proposal(
+            c,
+            "deprecate",
+            current_text,  # proposed_text: unchanged, carried for inspectability
+            "",  # suggested_scope_id: ignored for deprecate, inherits target's own scope
+            target_id=rule_id,
+            reason=reason,
+            metadata={"superseded_by": superseded_by} if superseded_by else None,
+        )
+
+    return _security_pattern(tool_name, params, project_id, _impl)
+
+
+@mcp.tool()
 def create_project(
     project_id: Annotated[str, Field(description="New project identifier (the tool creates scope 'project-<id>').")],
     name: Annotated[str | None, Field(description="Human-readable project name; defaults to project_id.")] = None,
@@ -500,6 +545,14 @@ def query_rules(
             "(may return STALE_INDEX per row if its source file changed since indexing)."
         ),
     ] = "summary",
+    include_deprecated: Annotated[
+        bool,
+        Field(
+            description="Include deprecated rules. Only affects plain SQL filtering — "
+            "deprecated rules are removed from the semantic (query_text) index on "
+            "deprecation, so this does not revive them there."
+        ),
+    ] = False,
 ) -> str:
     """Query active rules visible to a project across its full scope
     hierarchy (most-specific scope first), via plain SQL filtering or —
@@ -517,6 +570,7 @@ def query_rules(
         "query_text": query_text,
         "format": format,
         "detail": detail,
+        "include_deprecated": include_deprecated,
     }
 
     def _impl() -> str:
@@ -528,6 +582,7 @@ def query_rules(
             query_text=query_text,
             format=format,
             detail=detail,
+            include_deprecated=include_deprecated,
             conn=_get_conn(),
         )
 
@@ -558,6 +613,14 @@ def query_lessons(
             "text (may return STALE_INDEX per row if its source file changed since indexing)."
         ),
     ] = "summary",
+    include_deprecated: Annotated[
+        bool,
+        Field(
+            description="Include deprecated lessons. Only affects plain SQL filtering — "
+            "deprecated lessons are removed from the semantic (query_text) index on "
+            "deprecation, so this does not revive them there."
+        ),
+    ] = False,
 ) -> str:
     """Query active lessons visible to a project across its full scope
     hierarchy (most-specific scope first), via plain SQL filtering or —
@@ -574,6 +637,7 @@ def query_lessons(
         "query_text": query_text,
         "format": format,
         "detail": detail,
+        "include_deprecated": include_deprecated,
     }
 
     def _impl() -> str:
@@ -584,6 +648,7 @@ def query_lessons(
             query_text=query_text,
             format=format,
             detail=detail,
+            include_deprecated=include_deprecated,
         )
 
     return _security_pattern(tool_name, params, project_id, _impl)

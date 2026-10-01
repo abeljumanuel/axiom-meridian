@@ -50,6 +50,16 @@ def _apply_migration(conn: sqlite3.Connection, number: int, path: Path) -> None:
         if required <= existing:
             return
 
+    if number == 5:
+        # ALTER TABLE ADD COLUMN has no "IF NOT EXISTS" in SQLite, unlike the
+        # CREATE INDEX/TABLE statements every other migration uses — a
+        # database created after schema.sql already defined superseded_by
+        # would otherwise fail with "duplicate column name" when this
+        # migration runs right after initialize_db's fresh schema.sql path.
+        existing = _table_columns(conn, "rule_history")
+        if "superseded_by" in existing:
+            return
+
     for statement in _migration_statements(path.read_text(encoding="utf-8")):
         conn.execute(statement)
 

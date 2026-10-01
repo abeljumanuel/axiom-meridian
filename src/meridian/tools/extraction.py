@@ -90,29 +90,33 @@ def create_pending_proposal(
     suggested_attributes: list[dict[str, str]] | None = None,
     source_type: str | None = None,
     source_ref: str | None = None,
+    reason: str | None = None,
+    metadata: dict | None = None,
 ) -> str:
     """Validate and persist a pending proposal.
 
     1. Validates that suggested_scope_id exists in scopes (for rule/lesson types).
-    2. For UPDATE type: validates target_id exists and references an existing rule/lesson.
+    2. For UPDATE/DEPRECATE types: validates target_id exists and references
+       an existing rule/lesson (and, for DEPRECATE, that metadata's
+       superseded_by, if given, references an existing active one).
     3. Sanitizes proposed_text via strip_private_tags (Layer 2 guarantee).
     4. Generates a sequential ID and inserts into pending_proposals.
     5. Returns the proposal ID.
     """
     type = type.lower() if type else None
     # Validate type
-    if type not in ("rule", "lesson", "update"):
+    if type not in ("rule", "lesson", "update", "deprecate"):
         raise ValueError(
             f"Invalid proposal type: {type}. "
-            "Must be 'rule', 'lesson', or 'update'."
+            "Must be 'rule', 'lesson', 'update', or 'deprecate'."
         )
 
-    # Handle UPDATE proposal type
-    if type == "update":
+    # Handle UPDATE/DEPRECATE proposal types (both target an existing rule/lesson)
+    if type in ("update", "deprecate"):
         if target_id is None:
             raise ValueError(
-                "target_id is required for UPDATE proposals. "
-                "Specify the ID of the rule or lesson to update."
+                f"target_id is required for {type.upper()} proposals. "
+                "Specify the ID of the rule or lesson to target."
             )
 
         # Infer target_type from ID prefix
@@ -136,7 +140,7 @@ def create_pending_proposal(
             if row is None:
                 raise ValueError(
                     f"Target rule '{target_id}' does not exist. "
-                    "Verify the rule_id before submitting the UPDATE proposal."
+                    f"Verify the rule_id before submitting the {type.upper()} proposal."
                 )
             # Use target's scope_id, not suggested_scope_id
             suggested_scope_id = row[0]
@@ -148,12 +152,35 @@ def create_pending_proposal(
             if row is None:
                 raise ValueError(
                     f"Target lesson '{target_id}' does not exist. "
-                    "Verify the lesson_id before submitting the UPDATE proposal."
+                    f"Verify the lesson_id before submitting the {type.upper()} proposal."
                 )
             # Use target's scope_id, not suggested_scope_id
             suggested_scope_id = row[0]
         else:
             raise ValueError(f"Invalid target_type: {target_type}")
+
+        if type == "deprecate":
+            superseded_by = (metadata or {}).get("superseded_by")
+            if superseded_by:
+                replacement_table = (
+                    "rules" if superseded_by.startswith("RN-")
+                    else "lessons" if superseded_by.startswith("LL-")
+                    else None
+                )
+                row = (
+                    conn.execute(
+                        f"SELECT 1 FROM {replacement_table} "  # noqa: S608
+                        "WHERE id = ? AND status = 'active'",
+                        (superseded_by,),
+                    ).fetchone()
+                    if replacement_table
+                    else None
+                )
+                if row is None:
+                    raise ValueError(
+                        f"superseded_by '{superseded_by}' does not reference an "
+                        "existing active rule or lesson."
+                    )
 
     else:
         # Validate scope for rule/lesson types
@@ -173,8 +200,8 @@ def create_pending_proposal(
         """
         INSERT INTO pending_proposals
         (id, type, scope_id, target_id, proposed_text,
-         suggested_attributes, source_type, source_ref)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         suggested_attributes, source_type, source_ref, reason, metadata)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             prop_id,
@@ -185,6 +212,8 @@ def create_pending_proposal(
             json.dumps(suggested_attributes) if suggested_attributes else None,
             source_type,
             source_ref,
+            reason,
+            json.dumps(metadata) if metadata else None,
         ),
     )
     conn.commit()

@@ -185,3 +185,100 @@ def test_create_proposal_strips_private(tmp_kb):
     assert row is not None
     assert "[REDACTED]" in row[0]
     assert "secret" not in row[0]
+
+
+def _seed_rule_by_code(conn: sqlite3.Connection, code: str, scope_id: str, status: str = "active") -> None:
+    """Insert a rule the way approve_proposal actually does: id == code
+    (see knowledge_management.py's INSERT INTO rules), unlike _seed_rules'
+    synthetic id="rule-001" shape used by the audit_pr tests above."""
+    conn.execute(
+        """
+        INSERT INTO rules
+        (id, scope_id, code, text, category, severity, status, tags)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (code, scope_id, code, f"Text for {code}", "architecture", "medium", status, json.dumps([])),
+    )
+    conn.commit()
+
+
+def test_create_deprecate_proposal_persists_reason_and_metadata(tmp_kb):
+    kb_path, conn = tmp_kb
+    _seed_rule_by_code(conn, "RN-JAVA-001", "global-java")
+    _seed_rule_by_code(conn, "RN-JAVA-002", "global-java")
+
+    prop_id = create_pending_proposal(
+        conn,
+        "deprecate",
+        "Test rule one",
+        "global-java",
+        target_id="RN-JAVA-001",
+        reason="No longer applies after the v2 rewrite",
+        metadata={"superseded_by": "RN-JAVA-002"},
+    )
+
+    row = conn.execute(
+        "SELECT type, target_id, scope_id, reason, metadata FROM pending_proposals "
+        "WHERE id = ?",
+        (prop_id,),
+    ).fetchone()
+    assert row[0] == "deprecate"
+    assert row[1] == "RN-JAVA-001"
+    assert row[2] == "global-java"  # taken from the target's own scope
+    assert row[3] == "No longer applies after the v2 rewrite"
+    assert json.loads(row[4]) == {"superseded_by": "RN-JAVA-002"}
+
+
+def test_create_deprecate_proposal_requires_target_id(tmp_kb):
+    kb_path, conn = tmp_kb
+
+    with pytest.raises(ValueError):
+        create_pending_proposal(conn, "deprecate", "Some text", "global-java")
+
+
+def test_create_deprecate_proposal_rejects_nonexistent_target(tmp_kb):
+    kb_path, conn = tmp_kb
+
+    with pytest.raises(ValueError):
+        create_pending_proposal(
+            conn,
+            "deprecate",
+            "Some text",
+            "global-java",
+            target_id="RN-JAVA-999",
+        )
+
+
+def test_create_deprecate_proposal_rejects_invalid_superseded_by(tmp_kb):
+    kb_path, conn = tmp_kb
+    _seed_rule_by_code(conn, "RN-JAVA-001", "global-java")
+
+    with pytest.raises(ValueError, match="superseded_by"):
+        create_pending_proposal(
+            conn,
+            "deprecate",
+            "Test rule one",
+            "global-java",
+            target_id="RN-JAVA-001",
+            reason="No longer applies",
+            metadata={"superseded_by": "RN-JAVA-999"},
+        )
+
+
+def test_create_deprecate_proposal_without_superseded_by_is_allowed(tmp_kb):
+    kb_path, conn = tmp_kb
+    _seed_rule_by_code(conn, "RN-JAVA-001", "global-java")
+
+    prop_id = create_pending_proposal(
+        conn,
+        "deprecate",
+        "Test rule one",
+        "global-java",
+        target_id="RN-JAVA-001",
+        reason="No longer applies",
+    )
+
+    row = conn.execute(
+        "SELECT metadata FROM pending_proposals WHERE id = ?", (prop_id,)
+    ).fetchone()
+    assert row[0] is None

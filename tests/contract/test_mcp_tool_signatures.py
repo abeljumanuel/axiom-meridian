@@ -55,6 +55,11 @@ EXPECTED: dict[str, dict[str, Any]] = {
         "rule_id": (str, inspect.Parameter.empty),
         "new_scope_id": (str, inspect.Parameter.empty),
     },
+    "deprecate_rule": {
+        "rule_id": (str, inspect.Parameter.empty),
+        "reason": (str, inspect.Parameter.empty),
+        "superseded_by": (str | None, None),
+    },
     "generate_embeddings": {
         "scope_id": (str | None, None),
     },
@@ -71,6 +76,7 @@ EXPECTED: dict[str, dict[str, Any]] = {
         "query_text": (str | None, None),
         "format": (str, "json"),
         "detail": (str, "summary"),
+        "include_deprecated": (bool, False),
     },
     "query_lessons": {
         "project_id": (str, inspect.Parameter.empty),
@@ -79,6 +85,7 @@ EXPECTED: dict[str, dict[str, Any]] = {
         "query_text": (str | None, None),
         "format": (str, "json"),
         "detail": (str, "summary"),
+        "include_deprecated": (bool, False),
     },
     "get_rule_context": {
         "rule_id": (str, inspect.Parameter.empty),

@@ -139,9 +139,18 @@ def query_rules(
     query_text: str | None = None,
     format: str = "json",
     detail: str = "summary",
+    include_deprecated: bool = False,
     conn: sqlite3.Connection | None = None,
 ) -> str:
-    """Query active rules for a project using SQL or RAG filtering."""
+    """Query rules for a project using SQL or RAG filtering.
+
+    By default only active rules are returned. include_deprecated=True
+    includes deprecated rules in the plain-SQL path; it does not revive
+    results from the semantic (query_text) path, since deprecated rules
+    are removed from the vector index on deprecation — use
+    get_rule_context/get_rule_audit_log to inspect a specific deprecated
+    rule instead.
+    """
     close_on_exit = False
     if conn is None:
         conn = get_connection(get_db_path())
@@ -167,10 +176,9 @@ def query_rules(
             results = [r for r in results if r["id"] in filtered_set]
         else:
             placeholders = ",".join("?" for _ in scopes)
-            sql = (
-                f"SELECT * FROM rules WHERE scope_id IN ({placeholders}) "
-                f"AND status = 'active'"
-            )
+            sql = f"SELECT * FROM rules WHERE scope_id IN ({placeholders})"
+            if not include_deprecated:
+                sql += " AND status = 'active'"
             params: list[Any] = list(scopes)
 
             if category is not None:
@@ -256,9 +264,16 @@ def query_lessons(
     query_text: str | None = None,
     format: str = "json",
     detail: str = "summary",
+    include_deprecated: bool = False,
     conn: sqlite3.Connection | None = None,
 ) -> str:
-    """Query active lessons for a project using SQL or RAG filtering."""
+    """Query lessons for a project using SQL or RAG filtering.
+
+    By default only active lessons are returned. include_deprecated=True
+    includes deprecated lessons in the plain-SQL path; it does not revive
+    results from the semantic (query_text) path, since deprecated lessons
+    are removed from the vector index on deprecation.
+    """
     close_on_exit = False
     if conn is None:
         conn = get_connection(get_db_path())
@@ -282,10 +297,9 @@ def query_lessons(
             results = [_normalize_rag_lesson(c) for c in candidates]
         else:
             placeholders = ",".join("?" for _ in scopes)
-            sql = (
-                f"SELECT * FROM lessons WHERE scope_id IN ({placeholders}) "
-                f"AND status = 'active'"
-            )
+            sql = f"SELECT * FROM lessons WHERE scope_id IN ({placeholders})"
+            if not include_deprecated:
+                sql += " AND status = 'active'"
             params: list[Any] = list(scopes)
 
             if area is not None:
@@ -533,30 +547,27 @@ def get_rule_audit_log(
 
         deprecated_rules: list[dict[str, Any]] = []
         if target_scope is not None:
+            # IN ('DEPRECATED', 'PROMOTED'): promote_rule records its
+            # deprecation side effect as 'PROMOTED', not 'DEPRECATED' — a
+            # rule deprecated via promote_rule was previously invisible
+            # here (add-rule-lesson-deprecation).
             cursor = conn.execute(
                 """
-                SELECT r.*, rh.reason as deprecation_reason
+                SELECT r.*, rh.reason as deprecation_reason, rh.superseded_by
                 FROM rules r
                 JOIN rule_history rh ON r.id = rh.rule_id
                 WHERE r.scope_id = ? AND r.status = 'deprecated'
-                    AND rh.change_type = 'DEPRECATED'
+                    AND rh.change_type IN ('DEPRECATED', 'PROMOTED')
                 """,
                 (target_scope,),
             )
             dep_columns = [d[0] for d in cursor.description]
             for dep_row in cursor.fetchall():
                 dep_rule = dict(zip(dep_columns, dep_row))
-                cursor2 = conn.execute(
-                    """
-                    SELECT reason FROM rule_history
-                    WHERE rule_id = ? AND change_type = 'PROMOTED'
-                    ORDER BY changed_at DESC LIMIT 1
-                    """,
-                    (dep_rule["id"],),
-                )
-                promoted = cursor2.fetchone()
-                if promoted and promoted[0]:
-                    dep_rule["superseded_by"] = promoted[0]
+                # Rows written before migration 005 have superseded_by
+                # NULL even for a 'PROMOTED' entry — reason (e.g.
+                # "Promoted to scope X") remains the only information
+                # for those, so it is not overwritten here.
                 deprecated_rules.append(dep_rule)
 
         return {

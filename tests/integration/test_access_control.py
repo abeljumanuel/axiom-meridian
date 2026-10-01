@@ -149,6 +149,44 @@ def test_create_pending_proposal_exposes_update_target(tmp_server_db, monkeypatc
         assert log["result"] in ("success", "error")
 
 
+def test_deprecate_rule_analyze_level_creates_visible_proposal(tmp_server_db, monkeypatch):
+    """Exercises the actual server.py deprecate_rule wrapper end-to-end:
+    an analyze-level credential can create the proposal, and it shows up
+    through list_pending_proposals — not just via the internal
+    extraction.create_pending_proposal function."""
+    monkeypatch.setenv("MERIDIAN_ACCESS_LEVEL", "analyze")
+    tmp_server_db.execute(
+        "INSERT INTO rules (id, scope_id, code, text, category, severity) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("RN-GLOBAL-002", "global", "RN-GLOBAL-002", "Some rule text.", "general", "medium"),
+    )
+    tmp_server_db.commit()
+
+    proposal_id = server.deprecate_rule(
+        rule_id="RN-GLOBAL-002",
+        reason="No longer applies",
+    )
+
+    pending = json.loads(server.list_pending_proposals())
+    assert any(p["id"] == proposal_id and p["type"] == "deprecate" for p in pending)
+
+    logs = _last_access_logs(tmp_server_db, 2)
+    tool_names = {log["tool_name"] for log in logs}
+    assert "deprecate_rule" in tool_names
+
+
+def test_read_level_denies_deprecate_rule(tmp_server_db, monkeypatch):
+    monkeypatch.setenv("MERIDIAN_ACCESS_LEVEL", "read")
+    result = server.deprecate_rule(rule_id="RN-GLOBAL-002", reason="No longer applies")
+    parsed = json.loads(result)
+    assert parsed.get("error") == "ACCESS_DENIED"
+    assert parsed.get("tool") == "deprecate_rule"
+
+    logs = _last_access_logs(tmp_server_db, 1)
+    assert logs[0]["tool_name"] == "deprecate_rule"
+    assert logs[0]["result"] == "denied"
+
+
 def test_access_log_excludes_sensitive_params(tmp_server_db, monkeypatch):
     monkeypatch.setenv("MERIDIAN_ACCESS_LEVEL", "analyze")
     result = server.audit_pr("large diff containing secrets", "project-project-example")

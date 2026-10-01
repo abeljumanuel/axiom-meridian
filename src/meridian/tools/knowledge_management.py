@@ -595,6 +595,8 @@ def approve_proposal(proposal_id: str) -> dict:
 
         if proposal["type"] == "update":
             return _approve_update_proposal(conn, proposal_id, proposal, proposed_text, metadata)
+        if proposal["type"] == "deprecate":
+            return _approve_deprecate_proposal(conn, proposal_id, proposal, metadata)
         return _approve_create_proposal(conn, proposal_id, proposal, proposed_text, metadata)
     finally:
         conn.close()
@@ -850,6 +852,83 @@ def _approve_update_proposal(
         "file_offset": old_offset,
         "byte_length": new_length,
         "embedded": embedded,
+    }
+
+
+def _approve_deprecate_proposal(
+    conn: sqlite3.Connection,
+    proposal_id: str,
+    proposal: dict,
+    metadata: dict,
+) -> dict:
+    """Approve a DEPRECATE proposal: mark the target deprecated in SQLite
+    and its source .md file, and record a DEPRECATED history entry.
+
+    Independent of promote_rule — does not touch the target's scope_id.
+    """
+    target_id = proposal.get("target_id")
+    if target_id is None:
+        raise ValueError(f"DEPRECATE proposal {proposal_id} has no target_id")
+
+    target_table, hist_table, _block_builder, id_field, target = _resolve_update_target(
+        conn, target_id
+    )
+
+    reason = proposal.get("reason")
+    superseded_by = metadata.get("superseded_by")
+    file_path = target.get("file_path")
+    file_offset = target.get("file_offset")
+    byte_length = target.get("byte_length")
+
+    conn.execute("BEGIN TRANSACTION")
+    try:
+        conn.execute(
+            f"UPDATE {target_table} SET status = 'deprecated', "  # noqa: S608
+            "updated_at = datetime('now') WHERE id = ?",
+            (target_id,),
+        )
+
+        if file_path and file_offset is not None and byte_length is not None:
+            new_length = _mark_deprecated_in_md(conn, file_path, file_offset, byte_length)
+            if new_length is not None and new_length != byte_length:
+                conn.execute(
+                    f"UPDATE {target_table} SET byte_length = ? WHERE id = ?",  # noqa: S608
+                    (new_length, target_id),
+                )
+
+        hist_id = next_sequential_id(conn, hist_table, "rh" if target_table == "rules" else "lh")
+        conn.execute(
+            f"""
+            INSERT INTO {hist_table}
+            (id, {id_field}, change_type, reason, superseded_by)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (hist_id, target_id, "DEPRECATED", reason, superseded_by),
+        )
+        conn.execute(
+            "UPDATE pending_proposals SET status = 'approved' WHERE id = ?",
+            (proposal_id,),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+    if target_table == "rules":
+        embedding_removed = _remove_embedding_after_deprecate(
+            conn, table="rules", kind="rule", code=target_id, delete_fn=vector_store.delete_rule,
+        )
+    else:
+        embedding_removed = _remove_embedding_after_deprecate(
+            conn, table="lessons", kind="lesson", code=target_id, delete_fn=vector_store.delete_lesson,
+        )
+
+    return {
+        "proposal_id": proposal_id,
+        "target_id": target_id,
+        "status": "deprecated",
+        "superseded_by": superseded_by,
+        "embedding_removed": embedding_removed,
     }
 
 
@@ -1311,10 +1390,15 @@ def promote_rule(rule_id: str, new_scope_id: str) -> dict:
 
         conn.commit()
 
+        embedding_removed = _remove_embedding_after_deprecate(
+            conn, table="rules", kind="rule", code=rule_id, delete_fn=vector_store.delete_rule,
+        )
+
         return {
             "rule_id": rule_id,
             "new_scope_id": new_scope_id,
             "status": "deprecated",
+            "embedding_removed": embedding_removed,
         }
     finally:
         conn.close()
@@ -1395,6 +1479,54 @@ def _embed_and_upsert_after_approve(
         return False
 
 
+def _remove_embedding_after_deprecate(
+    conn: sqlite3.Connection,
+    *,
+    table: str,
+    kind: str,
+    code: str,
+    delete_fn,
+) -> bool:
+    """Remove a just-deprecated row's entry from the vector store and clear
+    its embedding_id.
+
+    Called after the deprecation's own transaction has already committed
+    (same placement as _embed_and_upsert_after_approve), so a failure here
+    (ChromaDB unavailable, ...) is logged and swallowed — it must never
+    affect a deprecation that already succeeded. A row without an
+    embedding_id is still visited: delete_fn is called regardless (safe,
+    per vector_store.delete_rule/delete_lesson's no-op-on-missing-id
+    behavior), since this function only handles vector-store cleanup, not
+    rule_history/lesson_history semantics — those are recorded by the
+    caller (_approve_deprecate_proposal, promote_rule) before this runs.
+
+    Shared by both deprecation origins so the index doesn't go stale for
+    one of them while staying current for the other (see
+    openspec/changes/add-rule-lesson-deprecation/design.md, Decision 5).
+
+    Returns True on success, False on any failure (including "row not
+    found"), orthogonal to whether the deprecation itself succeeded.
+    """
+    try:
+        row = conn.execute(
+            f"SELECT id FROM {table} WHERE code = ?",  # noqa: S608
+            (code,),
+        ).fetchone()
+        if row is None:
+            return False
+        entity_id = row[0]
+        delete_fn(entity_id)
+        conn.execute(
+            f"UPDATE {table} SET embedding_id = NULL WHERE id = ?",  # noqa: S608
+            (entity_id,),
+        )
+        conn.commit()
+        return True
+    except Exception:
+        logger.exception("Failed to remove embedding for %s %s after deprecation", kind, code)
+        return False
+
+
 def _generate_embeddings_for_table(
     conn: sqlite3.Connection,
     *,
@@ -1457,19 +1589,63 @@ def _generate_embeddings_for_table(
     return processed, errors, len(rows)
 
 
+def _purge_deprecated_embeddings_for_table(
+    conn: sqlite3.Connection,
+    *,
+    table: str,
+    kind: str,
+    delete_fn,
+    scope_id: str | None,
+) -> int:
+    """Remove vector-store entries left behind by rows deprecated before
+    their embedding was ever cleaned up (e.g. by promote_rule prior to
+    add-rule-lesson-deprecation, or any future path that sets
+    status='deprecated' without also clearing embedding_id).
+
+    A sibling to _generate_embeddings_for_table, not a modification of
+    it: that function's query is the structural opposite of this one
+    (status='active' AND embedding_id IS NULL vs. status='deprecated' AND
+    embedding_id IS NOT NULL) — folding both into one function would
+    reintroduce the kind of multi-responsibility function this codebase's
+    own cohesion audit (Global Rule RN-002) already removed from here.
+
+    Returns the number of rows purged.
+    """
+    sql = (
+        f"SELECT id, code FROM {table} "  # noqa: S608
+        "WHERE status = 'deprecated' AND embedding_id IS NOT NULL"
+    )
+    params: list[object] = []
+    if scope_id is not None:
+        sql += " AND scope_id = ?"
+        params.append(scope_id)
+
+    rows = conn.execute(sql, params).fetchall()
+    purged = 0
+    for entity_id, code in rows:
+        if _remove_embedding_after_deprecate(
+            conn, table=table, kind=kind, code=code, delete_fn=delete_fn
+        ):
+            purged += 1
+    return purged
+
+
 def generate_embeddings(
     conn: sqlite3.Connection, scope_id: str | None = None
 ) -> dict:
-    """Generate or update embeddings for active rules and lessons.
+    """Generate or update embeddings for active rules and lessons, and
+    purge embeddings for rows already deprecated but not yet cleaned up.
 
     - Without scope_id → processes all active rules and lessons.
-    - With scope_id → processes only the specified scope (incremental).
-    - Only processes entries with embedding_id IS NULL.
-    - Updates embedding_id in SQLite after each entry is persisted.
+    - With scope_id → processes only the specified scope (incremental);
+      the purge step honors the same scope_id for parity.
+    - Only embeds entries with embedding_id IS NULL.
+    - Only purges entries with status='deprecated' AND embedding_id IS NOT NULL.
+    - Updates embedding_id in SQLite after each entry is persisted/purged.
     - Persists to ChromaDB with scope metadata for hybrid filtering.
 
     Returns: {"processed": int, "skipped": int, "errors": int,
-              "duration_seconds": float}
+              "purged": int, "duration_seconds": float}
     """
     start = time.perf_counter()
 
@@ -1501,12 +1677,20 @@ def generate_embeddings(
         + (lessons_total - lessons_processed - lessons_errors)
     )
 
+    rules_purged = _purge_deprecated_embeddings_for_table(
+        conn, table="rules", kind="rule", delete_fn=vector_store.delete_rule, scope_id=scope_id,
+    )
+    lessons_purged = _purge_deprecated_embeddings_for_table(
+        conn, table="lessons", kind="lesson", delete_fn=vector_store.delete_lesson, scope_id=scope_id,
+    )
+
     conn.commit()
     duration = time.perf_counter() - start
     return {
         "processed": processed,
         "skipped": skipped,
         "errors": errors,
+        "purged": rules_purged + lessons_purged,
         "duration_seconds": round(duration, 3),
     }
 

@@ -53,6 +53,7 @@ CREATE TABLE rule_history (
   new_text      TEXT,
   reason        TEXT,
   triggered_by  TEXT,
+  superseded_by TEXT REFERENCES rules(id),
   changed_at    TEXT DEFAULT (datetime('now'))
 );
 
@@ -65,6 +66,7 @@ CREATE TABLE lesson_history (
   new_text      TEXT,
   reason        TEXT,
   triggered_by  TEXT,
+  superseded_by TEXT REFERENCES lessons(id),
   changed_at    TEXT DEFAULT (datetime('now'))
 );
 
@@ -196,6 +198,7 @@ CREATE INDEX idx_rules_status ON rules(status);
 CREATE INDEX idx_scope_attributes_key_value ON scope_attributes(key, value);
 CREATE INDEX idx_rule_attributes_key_value ON rule_attributes(key, value);
 CREATE INDEX idx_lessons_scope_id ON lessons(scope_id);
+CREATE INDEX idx_lessons_status ON lessons(status);
 CREATE INDEX idx_pending_proposals_status ON pending_proposals(status);
 CREATE INDEX idx_pending_proposals_target_id ON pending_proposals(target_id);
 CREATE INDEX idx_access_log_timestamp ON access_log(timestamp);
